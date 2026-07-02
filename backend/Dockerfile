@@ -58,6 +58,10 @@ COPY --from=builder /app/dist ./dist
 # Copy the generated Prisma Client from builder (will be regenerated at runtime if provider changes)
 COPY --from=builder /app/src/generated ./dist/generated
 
+# Copy helper scripts (backfill-auto-share.js etc). Runs against the same
+# generated Prisma client used by the app.
+COPY scripts ./scripts/
+
 # Create necessary directories (ownership will be set in entrypoint)
 RUN mkdir -p /app/uploads /app/prisma
 

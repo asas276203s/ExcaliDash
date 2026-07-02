@@ -1,6 +1,7 @@
 import express from "express";
 import { DashboardRouteDeps } from "./types";
 import { getUserTrashCollectionId, isTrashCollectionId } from "./trash";
+import { autoShareCollection } from "../../autoShare";
 
 export const registerCollectionRoutes = (
   app: express.Express,
@@ -107,6 +108,15 @@ export const registerCollectionRoutes = (
       const newCollection = await prisma.collection.create({
         data: { name: sanitizedName, userId: req.user.id },
       });
+      // Auto-share this collection with users listed in AUTO_SHARE_USER_IDS
+      // (bamolab overlay behavior brought natively into the fork).
+      try {
+        await autoShareCollection(prisma, newCollection.id, req.user.id);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[auto-share] collection hook failed", err);
+      }
+      invalidateDrawingsCache();
       return res.json({ ...newCollection, sharedRole: null, isOwner: true });
     }),
   );
