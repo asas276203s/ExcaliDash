@@ -23,7 +23,6 @@ export const LayoutTabBar: React.FC = () => {
   } = useTabsContext();
 
   if (!visible) return null;
-  if (tabs.length === 0) return null;
 
   return (
     <div className="mb-3 sm:mb-4">
