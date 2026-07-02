@@ -19,10 +19,7 @@ import { useDashboardDrawingActions } from "./dashboard/useDashboardDrawingActio
 import { useDashboardSelection } from "./dashboard/useDashboardSelection";
 import { useDashboardSort } from "./dashboard/useDashboardSort";
 import { displayFontFamily } from "../utils/displayFont";
-import {
-  appendTabToStorage,
-  replaceActiveTabInStorage,
-} from "../utils/tabsStorage";
+import { appendTabToStorage } from "../utils/tabsStorage";
 const PAGE_SIZE = 24;
 export const Dashboard: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -265,14 +262,14 @@ export const Dashboard: React.FC = () => {
           onDelete={actions.handleDeleteDrawing}
           onDuplicate={actions.handleDuplicateDrawing}
           onMoveToCollection={actions.handleMoveToCollection}
-          onOpenDrawing={(id, options) => {
+          onOpenDrawing={(id) => {
+            // Always append: clicking a drawing from the Dashboard should
+            // never clobber the user's existing tab set. If the drawing is
+            // already open in a tab, appendTabToStorage just activates
+            // it; otherwise it adds a new tab. Cmd/Ctrl+click and
+            // regular click have the same "don't lose tabs" semantics.
             const drawing = sortedDrawings.find((d) => d.id === id);
-            const tab = { id, name: drawing?.name };
-            if (options?.newTab) {
-              appendTabToStorage(tab);
-            } else {
-              replaceActiveTabInStorage(tab);
-            }
+            appendTabToStorage({ id, name: drawing?.name });
             navigate(`/editor/${id}`);
           }}
           onMouseDown={actions.handleCardMouseDown}
