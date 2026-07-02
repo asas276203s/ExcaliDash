@@ -84,7 +84,11 @@ test.describe("Drawing Creation", () => {
     await page.goto(`/editor/${drawing.id}`);
     await page.waitForSelector("[class*='excalidraw'], canvas", { timeout: 15000 });
 
-    await expect(page.getByText(drawingName)).toBeVisible();
+    // Use the heading role to disambiguate from the same name that appears in
+    // the persistent layout tab bar (rendered above every page).
+    await expect(
+      page.getByRole("heading", { name: drawingName }),
+    ).toBeVisible();
   });
 
   test("should rename drawing via editor header", async ({ page, request }) => {
@@ -99,7 +103,9 @@ test.describe("Drawing Creation", () => {
 
     await revealEditorHeader(page);
 
-    const nameElement = page.getByText(originalName);
+    // Scope to the h1 heading so we don't match the same drawing name that
+    // appears in the persistent layout tab bar's tab label.
+    const nameElement = page.getByRole("heading", { name: originalName });
     await expect(nameElement).toBeInViewport();
     await nameElement.dblclick();
 

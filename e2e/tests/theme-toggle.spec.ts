@@ -1,7 +1,13 @@
 import { test, expect } from "@playwright/test";
 
+// Locate the theme toggle directly via its accessible name. The name is
+// derived from the button's h3 + description text (e.g. "Dark Mode Switch to
+// dark theme"), which the regex matches. Avoids the previous
+// getByRole('button').filter(...) chain that became fragile once the
+// persistent layout tab bar started rendering additional buttons above the
+// Settings grid.
 const themeToggle = (page: import("@playwright/test").Page) =>
-  page.getByRole("button").filter({ hasText: /Dark Mode|Light Mode/i }).first();
+  page.getByRole("button", { name: /Dark Mode|Light Mode/i });
 
 const ensureDarkTheme = async (page: import("@playwright/test").Page) => {
   const html = page.locator("html");
