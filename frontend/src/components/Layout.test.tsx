@@ -18,6 +18,13 @@ vi.mock("./ImpersonationBanner", () => ({
   ImpersonationBanner: () => null,
 }));
 
+// LayoutTabBar depends on TabsContext which requires a TabsProvider
+// higher in the tree. This test mounts Layout in isolation, so stub the
+// tab bar out — the resize-listener test doesn't care about tabs.
+vi.mock("./LayoutTabBar", () => ({
+  LayoutTabBar: () => null,
+}));
+
 import { Layout } from "./Layout";
 
 describe("Layout", () => {
