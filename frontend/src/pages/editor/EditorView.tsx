@@ -16,6 +16,8 @@ import {
 } from "../../components/LanguageSelector";
 import type { UserIdentity } from "../../utils/identity";
 import { UIOptions } from "./shared";
+import { TabBar } from "./TabBar";
+import type { EditorTab } from "./useTabs";
 
 interface Peer extends UserIdentity {
   isActive: boolean;
@@ -39,6 +41,13 @@ type EditorViewProps = {
   newName: string;
   peers: Peer[];
   theme: string;
+  tabs: EditorTab[];
+  activeTabId: string | null;
+  hasClosedHistory: boolean;
+  onActivateTab: (id: string) => void;
+  onCloseTab: (id: string) => void;
+  onOpenTabInNewTab: (id: string) => void;
+  onReopenLastClosed: () => void;
   onBackClick: () => void;
   onCanvasChange: (elements: readonly any[], appState: any, files?: Record<string, any>) => void;
   onCanvasDropCapture: (event: React.DragEvent<HTMLDivElement>) => void;
@@ -100,6 +109,13 @@ export const EditorView: React.FC<EditorViewProps> = ({
   newName,
   peers,
   theme,
+  tabs,
+  activeTabId,
+  hasClosedHistory,
+  onActivateTab,
+  onCloseTab,
+  onOpenTabInNewTab,
+  onReopenLastClosed,
   onBackClick,
   onCanvasChange,
   onCanvasDropCapture,
@@ -118,10 +134,15 @@ export const EditorView: React.FC<EditorViewProps> = ({
   onToggleAutoHide,
 }) => (
   <div className="h-screen flex flex-col bg-white dark:bg-neutral-950 overflow-hidden">
+    <div
+      className={clsx(
+        "fixed top-0 left-0 right-0 z-10 flex flex-col transition-transform duration-300",
+        isHeaderVisible ? "translate-y-0" : "-translate-y-full",
+      )}
+    >
     <header
       className={clsx(
-        "h-16 bg-white dark:bg-neutral-900 border-b border-gray-200 dark:border-neutral-800 flex items-center px-4 justify-between z-10 fixed top-0 left-0 right-0 transition-transform duration-300",
-        isHeaderVisible ? "translate-y-0" : "-translate-y-full",
+        "h-16 bg-white dark:bg-neutral-900 border-b border-gray-200 dark:border-neutral-800 flex items-center px-4 justify-between",
       )}
     >
       <div className="flex items-center gap-4">
@@ -216,13 +237,24 @@ export const EditorView: React.FC<EditorViewProps> = ({
         </div>
       </div>
     </header>
+      <TabBar
+        tabs={tabs}
+        activeId={activeTabId}
+        hasClosedHistory={hasClosedHistory}
+        onActivate={onActivateTab}
+        onClose={onCloseTab}
+        onOpenInNewTab={onOpenTabInNewTab}
+        onReopenLastClosed={onReopenLastClosed}
+        onNavigateHome={onNavigateHome}
+      />
+    </div>
     <div
       ref={editorContainerRef}
       className="flex-1 w-full relative transition-all duration-300"
       onDropCapture={onCanvasDropCapture}
       style={{
-        height: isHeaderVisible ? "calc(100vh - 4rem)" : "100vh",
-        marginTop: isHeaderVisible ? "4rem" : "0",
+        height: isHeaderVisible ? "calc(100vh - 6.25rem)" : "100vh",
+        marginTop: isHeaderVisible ? "6.25rem" : "0",
       }}
     >
       {loadError ? (
