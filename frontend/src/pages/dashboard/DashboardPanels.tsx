@@ -113,7 +113,7 @@ type DrawingsGridProps = {
   onDelete: (id: string) => void;
   onDuplicate: (id: string) => void;
   onMoveToCollection: (id: string, collectionId: string | null) => void;
-  onOpenDrawing: (id: string) => void;
+  onOpenDrawing: (id: string, options?: { newTab?: boolean }) => void;
   onMouseDown: (event: React.MouseEvent, id: string) => void;
   onDragStart: (event: React.DragEvent, id: string) => void;
   onPreviewGenerated: (id: string, preview: string) => void;
@@ -211,16 +211,30 @@ export const DrawingsGrid: React.FC<DrawingsGridProps> = ({
               onDuplicate={onDuplicate}
               onMoveToCollection={onMoveToCollection}
               onClick={(id, event) => {
+                // Shift = range/toggle select (matches Finder / most grid UIs).
+                // Cmd/Ctrl = "open in new tab" (matches browsers), BUT if the
+                // user is already in a multi-select session (something
+                // selected) we keep Cmd/Ctrl as add-to-selection so their
+                // in-flight selection doesn't get hijacked. Middle-click
+                // (button === 1) is always new tab.
+                if (event.button === 1) {
+                  event.preventDefault();
+                  onOpenDrawing(id, { newTab: true });
+                  return;
+                }
                 if (
-                  selectedIds.size > 0 ||
                   event.shiftKey ||
-                  event.metaKey ||
-                  event.ctrlKey
+                  (selectedIds.size > 0 &&
+                    (event.metaKey || event.ctrlKey))
                 ) {
                   onToggleSelection(id, event);
-                } else {
-                  onOpenDrawing(id);
+                  return;
                 }
+                if (event.metaKey || event.ctrlKey) {
+                  onOpenDrawing(id, { newTab: true });
+                  return;
+                }
+                onOpenDrawing(id);
               }}
               onMouseDown={onMouseDown}
               onDragStart={onDragStart}

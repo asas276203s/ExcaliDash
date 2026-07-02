@@ -19,7 +19,10 @@ import { useDashboardDrawingActions } from "./dashboard/useDashboardDrawingActio
 import { useDashboardSelection } from "./dashboard/useDashboardSelection";
 import { useDashboardSort } from "./dashboard/useDashboardSort";
 import { displayFontFamily } from "../utils/displayFont";
-import { replaceActiveTabInStorage } from "../utils/tabsStorage";
+import {
+  appendTabToStorage,
+  replaceActiveTabInStorage,
+} from "../utils/tabsStorage";
 const PAGE_SIZE = 24;
 export const Dashboard: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -262,9 +265,14 @@ export const Dashboard: React.FC = () => {
           onDelete={actions.handleDeleteDrawing}
           onDuplicate={actions.handleDuplicateDrawing}
           onMoveToCollection={actions.handleMoveToCollection}
-          onOpenDrawing={(id) => {
+          onOpenDrawing={(id, options) => {
             const drawing = sortedDrawings.find((d) => d.id === id);
-            replaceActiveTabInStorage({ id, name: drawing?.name });
+            const tab = { id, name: drawing?.name };
+            if (options?.newTab) {
+              appendTabToStorage(tab);
+            } else {
+              replaceActiveTabInStorage(tab);
+            }
             navigate(`/editor/${id}`);
           }}
           onMouseDown={actions.handleCardMouseDown}
