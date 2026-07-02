@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { ThemeProvider } from './context/ThemeContext';
 import { UploadProvider } from './context/UploadContext';
 import { AuthProvider } from './context/AuthContext';
+import { TabsProvider } from './context/TabsContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { Loader2 } from 'lucide-react';
 
@@ -28,6 +29,7 @@ function App() {
     <ThemeProvider>
       <Router>
         <AuthProvider>
+          <TabsProvider>
           <UploadProvider>
             <Suspense fallback={<PageLoader />}>
               <Routes>
@@ -89,6 +91,7 @@ function App() {
               </Routes>
             </Suspense>
           </UploadProvider>
+          </TabsProvider>
         </AuthProvider>
       </Router>
     </ThemeProvider>

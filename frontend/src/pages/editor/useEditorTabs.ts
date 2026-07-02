@@ -1,5 +1,6 @@
 import { useCallback, useEffect } from "react";
-import { useTabs, type UseTabsResult } from "./useTabs";
+import { type UseTabsResult } from "./useTabs";
+import { useTabsContext } from "../../context/TabsContext";
 import { useTabsKeyboard } from "./useTabsKeyboard";
 
 /**
@@ -19,7 +20,12 @@ export const useEditorTabs = ({
   drawingId,
   drawingName,
 }: UseEditorTabsParams): UseEditorTabsResult => {
-  const tabsApi = useTabs(drawingId);
+  // Read shared tab state from the app-level provider so the Layout's tab
+  // bar and the Editor stay in lockstep. The drawingId argument is
+  // preserved to match the previous signature but is no longer used to
+  // instantiate a new hook — the provider derives the current id from the
+  // router match.
+  const tabsApi = useTabsContext();
   const { updateTabName, closeTab, reopenLastClosed, activeId, hasClosedHistory } =
     tabsApi;
 

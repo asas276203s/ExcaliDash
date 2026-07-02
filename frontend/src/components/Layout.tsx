@@ -6,6 +6,7 @@ import { Logo } from './Logo';
 import { UploadStatus } from './UploadStatus';
 import { ImpersonationBanner } from './ImpersonationBanner';
 import { UpdateBanner } from './UpdateBanner';
+import { LayoutTabBar } from './LayoutTabBar';
 import type { Collection } from '../types';
 import clsx from 'clsx';
 import { displayFontFamily } from "../utils/displayFont";
@@ -132,6 +133,7 @@ export const Layout: React.FC<LayoutProps> = ({
               <div className="w-full mx-auto p-4 sm:p-6 lg:p-8 min-h-full">
                 <UpdateBanner />
                 <ImpersonationBanner />
+                <LayoutTabBar />
                 {children}
               </div>
             </div>
