@@ -38,7 +38,22 @@ export const registerDrawingListRoutes = (
         sortField,
         sortDirection,
       } = req.query;
-      const where: Prisma.DrawingWhereInput = { userId: req.user.id };
+      // "All Drawings" (and every unconstrained list) shows everything the
+      // caller can access, not only what they own. Auto-share turns the
+      // workspace into a shared space by default, so hiding shared
+      // drawings from the top-level list would defeat the feature. Access
+      // = owner OR explicit DrawingPermission OR the drawing sits inside a
+      // collection the caller has a CollectionShare on.
+      const accessClauses: Prisma.DrawingWhereInput[] = [
+        { userId: req.user.id },
+        { permissions: { some: { granteeUserId: req.user.id } } },
+        {
+          collection: {
+            shares: { some: { granteeUserId: req.user.id } },
+          },
+        },
+      ];
+      const where: Prisma.DrawingWhereInput = { OR: accessClauses };
       const searchTerm =
         typeof search === "string" && search.trim().length > 0
           ? search.trim()
@@ -78,16 +93,24 @@ export const registerDrawingListRoutes = (
               return res.status(404).json({ error: "Collection not found" });
             }
           }
-          // Always fetch all drawings in the collection regardless of who created them
-          delete (where as any).userId;
+          // When browsing a specific collection, drop the top-level access
+          // OR (owner/permission/collection-share) — the ownership /
+          // share check above already gated entry, and inside the folder
+          // every drawing should be listed regardless of who created it.
+          delete (where as any).OR;
 
           where.collectionId = normalizedCollectionId;
           collectionFilterKey = `id:${normalizedCollectionId}`;
         }
       } else {
-        where.OR = [
-          { collectionId: { notIn: [trashCollectionId, "trash"] } },
-          { collectionId: null },
+        // Exclude trash without stomping the access-clause OR above.
+        where.AND = [
+          {
+            OR: [
+              { collectionId: { notIn: [trashCollectionId, "trash"] } },
+              { collectionId: null },
+            ],
+          },
         ];
       }
 
