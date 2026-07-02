@@ -106,9 +106,18 @@ jobs:
       
       - name: Start servers and run E2E tests
         run: |
-          # Start backend server in background
+          # Start backend server in background.
+          # CSRF_MAX_REQUESTS and RATE_LIMIT_MAX_REQUESTS mirror the values
+          # playwright.config.ts sets when it manages the backend itself, so
+          # the shared runner IP does not blow past the default 60-req/min
+          # CSRF budget mid-suite.
           cd backend
-          DATABASE_URL="file:${{ github.workspace }}/backend/prisma/e2e-test.db" FRONTEND_URL="http://localhost:6767" npm run dev &
+          DATABASE_URL="file:${{ github.workspace }}/backend/prisma/e2e-test.db" \
+            FRONTEND_URL="http://localhost:6767" \
+            CSRF_MAX_REQUESTS=100000 \
+            RATE_LIMIT_MAX_REQUESTS=100000 \
+            CSRF_SECRET="e2e-csrf-secret" \
+            npm run dev &
           BACKEND_PID=$!
           cd ..
           
