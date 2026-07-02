@@ -1,39 +1,51 @@
-// Auto-share helper: mirrors bamolab-overlay auto-share behavior natively in
-// TypeScript, so the fork can be built and deployed as a first-class image
-// (no runtime JS patching required).
+// Auto-share helper: every drawing + collection is automatically shared
+// with every other active user in the workspace, so the "workspace" acts
+// like a shared team space by default.
 //
-// Reads AUTO_SHARE_USER_IDS (comma-separated user ids) once per process and
-// exposes two upsert helpers:
-//   - autoShareDrawing:   copies a newly created drawing to DrawingPermission
-//                         (permission "edit") for every grantee.
-//   - autoShareCollection: copies a newly created collection to CollectionShare
-//                         (role "edit") for every grantee.
+// Grantee list resolution:
+//   - Mode "all" (default): SELECT id FROM User WHERE isActive at share
+//     time — no env var needed. Newly added users automatically get access
+//     to everything moving forward, and existing users don't need any
+//     config change when a teammate joins.
+//   - Mode "env": legacy behaviour — read AUTO_SHARE_USER_IDS env var
+//     (comma-separated ids). Kept for edge cases where a workspace needs
+//     an explicit allowlist.
+//   - Mode "off": no auto-share.
 //
-// Both helpers are best-effort: any per-grantee failure is logged and swallowed
-// so a bad configuration cannot break the user-facing create flow.
+// Both helpers are best-effort: any per-grantee failure is logged and
+// swallowed so a bad configuration cannot break the user-facing create
+// flow. When the DB query itself fails we swallow and skip auto-share
+// for that call — the drawing/collection still gets created.
 
 import type { PrismaClient } from "./generated/client";
 
-let cachedGrantees: string[] | null = null;
+type AutoShareMode = "all" | "env" | "off";
 
-const resolveGrantees = (): string[] => {
-  if (cachedGrantees !== null) return cachedGrantees;
+const resolveMode = (): AutoShareMode => {
+  const raw = (process.env.AUTO_SHARE_MODE || "all").trim().toLowerCase();
+  if (raw === "off") return "off";
+  if (raw === "env") return "env";
+  return "all";
+};
+
+let cachedEnvGrantees: string[] | null = null;
+
+const resolveEnvGrantees = (): string[] => {
+  if (cachedEnvGrantees !== null) return cachedEnvGrantees;
   const raw = (process.env.AUTO_SHARE_USER_IDS || "").trim();
-  cachedGrantees = raw
+  cachedEnvGrantees = raw
     ? raw
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean)
     : [];
-  return cachedGrantees;
+  return cachedEnvGrantees;
 };
 
 /** Test-only: forget the memoized env value so a new AUTO_SHARE_USER_IDS is picked up. */
 export const __resetAutoShareCache = (): void => {
-  cachedGrantees = null;
+  cachedEnvGrantees = null;
 };
-
-export const getAutoShareGrantees = (): string[] => resolveGrantees();
 
 const logAutoShareError = (context: string, err: unknown): void => {
   const message = err instanceof Error ? err.message : String(err);
@@ -41,12 +53,48 @@ const logAutoShareError = (context: string, err: unknown): void => {
   console.error(`[auto-share] ${context}: ${message}`);
 };
 
+const resolveAllUsers = async (
+  prisma: PrismaClient,
+  ownerUserId: string,
+): Promise<string[]> => {
+  try {
+    const users = await prisma.user.findMany({
+      where: {
+        isActive: true,
+        NOT: { id: ownerUserId },
+      },
+      select: { id: true },
+    });
+    return users.map((u) => u.id);
+  } catch (err) {
+    logAutoShareError("resolveAllUsers", err);
+    return [];
+  }
+};
+
+const resolveGrantees = async (
+  prisma: PrismaClient,
+  ownerUserId: string,
+): Promise<string[]> => {
+  const mode = resolveMode();
+  if (mode === "off") return [];
+  if (mode === "env")
+    return resolveEnvGrantees().filter((id) => id !== ownerUserId);
+  return resolveAllUsers(prisma, ownerUserId);
+};
+
+/** Exposed for tests + backfill scripts. */
+export const getAutoShareGrantees = async (
+  prisma: PrismaClient,
+  ownerUserId: string,
+): Promise<string[]> => resolveGrantees(prisma, ownerUserId);
+
 export const autoShareDrawing = async (
   prisma: PrismaClient,
   drawingId: string,
   ownerUserId: string,
 ): Promise<void> => {
-  const grantees = resolveGrantees();
+  const grantees = await resolveGrantees(prisma, ownerUserId);
   if (grantees.length === 0) return;
 
   for (const granteeUserId of grantees) {
@@ -81,7 +129,7 @@ export const autoShareCollection = async (
   collectionId: string,
   ownerUserId: string,
 ): Promise<void> => {
-  const grantees = resolveGrantees();
+  const grantees = await resolveGrantees(prisma, ownerUserId);
   if (grantees.length === 0) return;
 
   for (const granteeUserId of grantees) {

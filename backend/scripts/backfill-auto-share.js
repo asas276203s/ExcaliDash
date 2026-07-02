@@ -54,10 +54,32 @@ function parseArgs(argv) {
   return args;
 }
 
-function resolveGrantees() {
+function resolveEnvGrantees() {
   const raw = (process.env.AUTO_SHARE_USER_IDS || "").trim();
   if (!raw) return [];
   return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function resolveMode() {
+  const raw = (process.env.AUTO_SHARE_MODE || "all").trim().toLowerCase();
+  if (raw === "off") return "off";
+  if (raw === "env") return "env";
+  return "all";
+}
+
+async function resolveAllUserIds(prisma) {
+  const users = await prisma.user.findMany({
+    where: { isActive: true },
+    select: { id: true },
+  });
+  return users.map((u) => u.id);
+}
+
+async function resolveGrantees(prisma) {
+  const mode = resolveMode();
+  if (mode === "off") return [];
+  if (mode === "env") return resolveEnvGrantees();
+  return resolveAllUserIds(prisma);
 }
 
 async function loadPrisma() {
@@ -220,21 +242,21 @@ async function backfillCollections(prisma, grantees, args) {
 
 async function main() {
   const args = parseArgs(process.argv);
-  const grantees = resolveGrantees();
+  const prisma = await loadPrisma();
+  const grantees = await resolveGrantees(prisma);
+  const mode = resolveMode();
   if (grantees.length === 0) {
     // eslint-disable-next-line no-console
     console.error(
-      "[backfill] AUTO_SHARE_USER_IDS is empty — nothing to do. Set it and re-run.",
+      `[backfill] no grantees to backfill (mode=${mode}). Nothing to do.`,
     );
     process.exit(2);
   }
 
   // eslint-disable-next-line no-console
   console.log(
-    `[backfill] grantees: ${grantees.join(", ")}${args.dryRun ? "  (DRY RUN)" : ""}`,
+    `[backfill] mode=${mode}  grantees=${grantees.join(", ")}${args.dryRun ? "  (DRY RUN)" : ""}`,
   );
-
-  const prisma = await loadPrisma();
   try {
     let drawingStats = null;
     let collectionStats = null;
