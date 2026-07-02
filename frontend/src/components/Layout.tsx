@@ -203,6 +203,7 @@ export const Layout: React.FC<LayoutProps> = ({
             <div className="w-full mx-auto p-4 sm:p-6 lg:p-8 min-h-full">
               <UpdateBanner />
               <ImpersonationBanner />
+              <LayoutTabBar />
               {children}
             </div>
           </main>
