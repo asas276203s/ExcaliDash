@@ -19,6 +19,7 @@ import { useEditorCanvasHandlers } from "./editor/useEditorCanvasHandlers";
 import { useEditorCommands } from "./editor/useEditorCommands";
 import { useEditorElementTracking } from "./editor/useEditorElementTracking";
 import { useEditorBroadcast } from "./editor/useEditorBroadcast";
+import { useEditorTabs } from "./editor/useEditorTabs";
 export const Editor: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -336,6 +337,7 @@ export const Editor: React.FC = () => {
     user,
   });
 
+  const { tabs, activeId: activeTabId, openTab, closeTab, activateTab, reopenLastClosed, hasClosedHistory } = useEditorTabs({ drawingId: id, drawingName });
   return (
     <>
       <EditorView
@@ -356,6 +358,13 @@ export const Editor: React.FC = () => {
         newName={newName}
         peers={peers}
         theme={theme}
+        tabs={tabs}
+        activeTabId={activeTabId}
+        hasClosedHistory={hasClosedHistory}
+        onActivateTab={activateTab}
+        onCloseTab={closeTab}
+        onReopenLastClosed={reopenLastClosed}
+        onOpenTabInNewTab={(tabId) => openTab(tabId, { activate: true })}
         onBackClick={handleBackClick}
         onCanvasChange={handleCanvasChange}
         onCanvasDropCapture={handleCanvasDropCapture}
