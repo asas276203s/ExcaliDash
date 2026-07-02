@@ -1,0 +1,54 @@
+name: Sync upstream
+
+on:
+  schedule:
+    # 01:00 UTC = 09:00 Taiwan time daily
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge upstream ZimengXiong/ExcaliDash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@bamolab.org"
+          git remote add upstream https://github.com/ZimengXiong/ExcaliDash.git
+          git fetch upstream main
+
+          if git merge --no-edit upstream/main; then
+            echo "Merge clean, pushing to origin/main..."
+            git push origin main
+          else
+            echo "Merge conflict — aborting and opening a manual-merge PR."
+            git merge --abort
+            BRANCH="sync-upstream-$(date +%Y%m%d-%H%M%S)"
+            git checkout -b "$BRANCH"
+            # Take upstream's version on the working branch so the diff is what
+            # a human needs to review, then push.
+            git fetch upstream main
+            git reset --hard upstream/main
+            git push origin "$BRANCH"
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "Sync upstream ExcaliDash (manual merge required)" \
+              --body "Automatic merge from upstream (ZimengXiong/ExcaliDash) failed. Resolve the conflicts locally, or use this branch as a starting point." \
+              || echo "PR creation failed — check Actions tab."
+            # Exit non-zero so the run shows as failed in the Actions tab
+            # (the user's early-warning system).
+            exit 1
+          fi

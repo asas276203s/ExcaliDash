@@ -6,6 +6,7 @@ import {
   getDrawingAccess,
   isOwnerAccess,
 } from "../../authz/sharing";
+import { autoShareDrawing } from "../../autoShare";
 import { rewritePreviewForS3 } from "../../fileProcessing";
 import {
   getUserTrashCollectionId,
@@ -123,6 +124,13 @@ export const registerDrawingCreateUpdateRoutes = (
           files: JSON.stringify(processedFiles),
         },
       });
+      // Auto-share this new drawing with users listed in AUTO_SHARE_USER_IDS.
+      try {
+        await autoShareDrawing(prisma, newDrawing.id, req.user.id);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[auto-share] drawing hook failed", err);
+      }
       invalidateDrawingsCache();
 
       return res.json({

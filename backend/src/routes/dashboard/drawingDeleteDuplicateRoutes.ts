@@ -1,5 +1,6 @@
 import express from "express";
 import { v4 as uuidv4 } from "uuid";
+import { autoShareDrawing } from "../../autoShare";
 import { rewritePreviewForS3 } from "../../fileProcessing";
 import {
   getUserTrashCollectionId,
@@ -109,6 +110,13 @@ export const registerDrawingDeleteDuplicateRoutes = (
           version: 1,
         },
       });
+      // Auto-share the duplicated drawing with users in AUTO_SHARE_USER_IDS.
+      try {
+        await autoShareDrawing(prisma, newDrawing.id, req.user.id);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[auto-share] drawing duplicate hook failed", err);
+      }
       invalidateDrawingsCache();
 
       return res.json({
