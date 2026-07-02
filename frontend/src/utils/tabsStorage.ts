@@ -176,6 +176,42 @@ export const appendTabToStorage = (tab: StoredTab): void => {
 };
 
 /**
+ * Pure reorder helper used by both storage and in-memory state code paths.
+ *
+ * `toIndex` is the destination position in the RESULTING array (matches
+ * `arrayMove` semantics), not a visual insertion index. Returns the same
+ * reference when the move would be a noop (unknown id, in-place move) so
+ * callers can bail out cheaply.
+ */
+export const applyTabMove = <T extends { id: string }>(
+  list: T[],
+  fromId: string,
+  toIndex: number,
+): T[] => {
+  const fromIndex = list.findIndex((t) => t.id === fromId);
+  if (fromIndex === -1) return list;
+  const clamped = Math.max(0, Math.min(toIndex, list.length - 1));
+  if (fromIndex === clamped) return list;
+  const next = list.slice();
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(clamped, 0, moved);
+  return next;
+};
+
+/**
+ * Move an open tab to a new position and persist. `toIndex` is the destination
+ * index in the resulting order. Silently noops on unknown id / same position
+ * (no write). Callers that manage React state should still call `writeOpenTabs`
+ * via their own effect — this helper exists as the pure storage-side twin.
+ */
+export const moveTabInStorage = (fromId: string, toIndex: number): void => {
+  const current = readOpenTabs();
+  const next = applyTabMove(current, fromId, toIndex);
+  if (next === current) return;
+  writeOpenTabs(next);
+};
+
+/**
  * Replace the currently active tab (if any) with the given drawing. If no
  * active tab is set, behaves like appendTabToStorage.
  */

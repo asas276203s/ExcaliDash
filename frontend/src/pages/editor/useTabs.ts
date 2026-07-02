@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  applyTabMove,
   buildTabsSearch,
   parseTabsFromSearch,
   popClosedTab,
@@ -26,6 +27,7 @@ export interface UseTabsResult {
   activateTab: (id: string) => void;
   updateTabName: (id: string, name: string) => void;
   reopenLastClosed: () => void;
+  moveTab: (fromId: string, toIndex: number) => void;
   hasClosedHistory: boolean;
 }
 
@@ -189,6 +191,11 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
     [],
   );
 
+  const moveTab: UseTabsResult["moveTab"] = useCallback((fromId, toIndex) => {
+    if (!fromId) return;
+    setTabs((prev) => applyTabMove(prev, fromId, toIndex));
+  }, []);
+
   const reopenLastClosed: UseTabsResult["reopenLastClosed"] = useCallback(() => {
     const restored = popClosedTab();
     setHasClosedHistory(readClosedTabs().length > 0);
@@ -209,6 +216,7 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
       activateTab,
       updateTabName,
       reopenLastClosed,
+      moveTab,
       hasClosedHistory,
     }),
     [
@@ -219,6 +227,7 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
       activateTab,
       updateTabName,
       reopenLastClosed,
+      moveTab,
       hasClosedHistory,
     ],
   );

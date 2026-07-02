@@ -3,6 +3,12 @@ import { Home, RotateCcw, X } from "lucide-react";
 import clsx from "clsx";
 import type { EditorTab } from "./useTabs";
 
+/**
+ * MIME-ish payload key for our internal HTML5 drag. Namespaced so external
+ * drags (files, URLs, other apps) never masquerade as a tab reorder.
+ */
+const TAB_DRAG_MIME = "application/x-excalidash-tab-id";
+
 interface TabBarProps {
   tabs: EditorTab[];
   activeId: string | null;
@@ -11,6 +17,7 @@ interface TabBarProps {
   onClose: (id: string) => void;
   onOpenInNewTab?: (id: string) => void;
   onReopenLastClosed: () => void;
+  onReorderTab?: (fromId: string, toIndex: number) => void;
   onNavigateHome: () => void;
 }
 
@@ -21,18 +28,26 @@ interface TabItemProps {
   tab: EditorTab;
   isActive: boolean;
   showClose: boolean;
+  isDragging: boolean;
+  draggable: boolean;
   onActivate: () => void;
   onClose: () => void;
   onAuxOpen?: () => void;
+  onDragStart: (event: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd: (event: React.DragEvent<HTMLDivElement>) => void;
 }
 
 const TabItem: React.FC<TabItemProps> = ({
   tab,
   isActive,
   showClose,
+  isDragging,
+  draggable,
   onActivate,
   onClose,
   onAuxOpen,
+  onDragStart,
+  onDragEnd,
 }) => {
   const label = tab.name?.trim() || fallbackName(tab.id);
   const handlePointer = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -58,7 +73,11 @@ const TabItem: React.FC<TabItemProps> = ({
     <div
       role="tab"
       aria-selected={isActive}
+      aria-grabbed={isDragging}
       tabIndex={0}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       onMouseDown={handlePointer}
       onKeyDown={(e) => {
         if (e.nativeEvent.isComposing) return;
@@ -74,6 +93,7 @@ const TabItem: React.FC<TabItemProps> = ({
         isActive
           ? "bg-white dark:bg-neutral-950 text-gray-900 dark:text-white"
           : "bg-gray-100 dark:bg-neutral-900 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-neutral-800/60 hover:text-gray-800 dark:hover:text-gray-200",
+        isDragging && "opacity-40",
       )}
       title={tab.name || tab.id}
     >
@@ -119,12 +139,96 @@ export const TabBar: React.FC<TabBarProps> = ({
   onClose,
   onOpenInNewTab,
   onReopenLastClosed,
+  onReorderTab,
   onNavigateHome,
 }) => {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [scrollShadow, setScrollShadow] = useState<"none" | "start" | "end" | "both">(
     "none",
   );
+
+  // Drag-to-reorder state. `dragId` is the tab being dragged; `dropIndex` is
+  // the visual insertion index (0..tabs.length) where the accent bar renders.
+  // `dropIndicatorLeft` is the pixel offset relative to the scroller's content
+  // box, used to position the indicator across horizontal scroll.
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const [dropIndicatorLeft, setDropIndicatorLeft] = useState<number | null>(null);
+
+  const resetDragState = () => {
+    setDragId(null);
+    setDropIndex(null);
+    setDropIndicatorLeft(null);
+  };
+
+  const computeDropTarget = (
+    scroller: HTMLDivElement,
+    clientX: number,
+  ): { index: number; left: number } => {
+    const items = Array.from(
+      scroller.querySelectorAll<HTMLElement>("[data-tab-id]"),
+    );
+    const scrollerRect = scroller.getBoundingClientRect();
+    if (items.length === 0) {
+      return { index: 0, left: scroller.scrollLeft };
+    }
+    for (let i = 0; i < items.length; i++) {
+      const rect = items[i].getBoundingClientRect();
+      const mid = rect.left + rect.width / 2;
+      if (clientX < mid) {
+        return { index: i, left: rect.left - scrollerRect.left + scroller.scrollLeft };
+      }
+    }
+    const last = items[items.length - 1].getBoundingClientRect();
+    return {
+      index: items.length,
+      left: last.right - scrollerRect.left + scroller.scrollLeft,
+    };
+  };
+
+  const handleScrollerDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!dragId) return;
+    // dataTransfer.types is lower-cased by the browser; our custom MIME is
+    // already lower-case so this compares directly.
+    if (!event.dataTransfer.types.includes(TAB_DRAG_MIME)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const { index, left } = computeDropTarget(scroller, event.clientX);
+    setDropIndex(index);
+    setDropIndicatorLeft(left);
+  };
+
+  const handleScrollerDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    // If the pointer left the scroller entirely (relatedTarget is outside or
+    // null), hide the indicator. We keep dragId so re-entry restores it.
+    const next = event.relatedTarget as Node | null;
+    if (next && event.currentTarget.contains(next)) return;
+    setDropIndex(null);
+    setDropIndicatorLeft(null);
+  };
+
+  const handleScrollerDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!dragId) return;
+    const fromId = event.dataTransfer.getData(TAB_DRAG_MIME) || dragId;
+    event.preventDefault();
+    const fromIndex = tabs.findIndex((t) => t.id === fromId);
+    if (fromIndex === -1) {
+      resetDragState();
+      return;
+    }
+    // Visual insertion index → destination index in the resulting array.
+    // When moving forward (visualIndex > fromIndex), one slot behind the
+    // dragged tab disappears, so subtract 1 to keep the insertion point stable.
+    const visualIndex =
+      dropIndex ?? computeDropTarget(event.currentTarget, event.clientX).index;
+    const targetIndex = visualIndex > fromIndex ? visualIndex - 1 : visualIndex;
+    if (targetIndex !== fromIndex && onReorderTab) {
+      onReorderTab(fromId, targetIndex);
+    }
+    resetDragState();
+  };
 
   // Ensure the active tab stays visible when it changes.
   useEffect(() => {
@@ -181,8 +285,11 @@ export const TabBar: React.FC<TabBarProps> = ({
       <div
         ref={scrollerRef}
         onScroll={updateShadows}
+        onDragOver={handleScrollerDragOver}
+        onDragLeave={handleScrollerDragLeave}
+        onDrop={handleScrollerDrop}
         className={clsx(
-          "flex items-stretch flex-1 min-w-0 overflow-x-auto scrollbar-none",
+          "relative flex items-stretch flex-1 min-w-0 overflow-x-auto scrollbar-none",
           scrollShadow === "start" &&
             "shadow-[inset_10px_0_8px_-8px_rgba(0,0,0,0.15)]",
           scrollShadow === "end" &&
@@ -198,12 +305,33 @@ export const TabBar: React.FC<TabBarProps> = ({
               tab={tab}
               isActive={tab.id === activeId}
               showClose={tabs.length > 0}
+              isDragging={dragId === tab.id}
+              draggable={!!onReorderTab}
               onActivate={() => onActivate(tab.id)}
               onClose={() => onClose(tab.id)}
               onAuxOpen={onOpenInNewTab ? () => onOpenInNewTab(tab.id) : undefined}
+              onDragStart={(e) => {
+                if (!onReorderTab) return;
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData(TAB_DRAG_MIME, tab.id);
+                // Some browsers also require a text payload to fire drop.
+                e.dataTransfer.setData("text/plain", tab.id);
+                setDragId(tab.id);
+              }}
+              onDragEnd={() => {
+                // Fires whether the drop succeeded or was cancelled (esc, off-bar).
+                resetDragState();
+              }}
             />
           </div>
         ))}
+        {dropIndex !== null && dropIndicatorLeft !== null && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute top-0 bottom-0 w-[2px] bg-indigo-500 dark:bg-indigo-400"
+            style={{ left: dropIndicatorLeft - 1 }}
+          />
+        )}
       </div>
       <button
         type="button"

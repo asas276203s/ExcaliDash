@@ -5,6 +5,7 @@ import {
   OPEN_TABS_KEY,
   appendTabToStorage,
   buildTabsSearch,
+  moveTabInStorage,
   parseTabsFromSearch,
   popClosedTab,
   pushClosedTab,
@@ -188,5 +189,52 @@ describe("higher-level helpers", () => {
       { id: "b", name: undefined },
     ]);
     expect(readActiveTab()).toBe("b");
+  });
+});
+
+describe("moveTabInStorage", () => {
+  it("moves a tab forward and persists new order", () => {
+    writeOpenTabs([{ id: "a" }, { id: "b", name: "Beta" }, { id: "c" }, { id: "d" }]);
+    moveTabInStorage("b", 2);
+    expect(readOpenTabs()).toEqual([
+      { id: "a", name: undefined },
+      { id: "c", name: undefined },
+      { id: "b", name: "Beta" },
+      { id: "d", name: undefined },
+    ]);
+  });
+
+  it("moves a tab backward and persists new order", () => {
+    writeOpenTabs([{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d", name: "Delta" }]);
+    moveTabInStorage("d", 0);
+    expect(readOpenTabs()).toEqual([
+      { id: "d", name: "Delta" },
+      { id: "a", name: undefined },
+      { id: "b", name: undefined },
+      { id: "c", name: undefined },
+    ]);
+  });
+
+  it("is a noop when destination equals current index (no rewrite)", () => {
+    writeOpenTabs([{ id: "a" }, { id: "b" }, { id: "c" }]);
+    const before = window.localStorage.getItem(OPEN_TABS_KEY);
+    moveTabInStorage("b", 1);
+    expect(window.localStorage.getItem(OPEN_TABS_KEY)).toBe(before);
+    expect(readOpenTabs()).toEqual([
+      { id: "a", name: undefined },
+      { id: "b", name: undefined },
+      { id: "c", name: undefined },
+    ]);
+  });
+
+  it("is a noop when the id does not exist", () => {
+    writeOpenTabs([{ id: "a" }, { id: "b" }]);
+    const before = window.localStorage.getItem(OPEN_TABS_KEY);
+    moveTabInStorage("missing", 0);
+    expect(window.localStorage.getItem(OPEN_TABS_KEY)).toBe(before);
+    expect(readOpenTabs()).toEqual([
+      { id: "a", name: undefined },
+      { id: "b", name: undefined },
+    ]);
   });
 });

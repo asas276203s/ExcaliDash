@@ -337,7 +337,7 @@ export const Editor: React.FC = () => {
     user,
   });
 
-  const { tabs, activeId: activeTabId, openTab, closeTab, activateTab, reopenLastClosed, hasClosedHistory } = useEditorTabs({ drawingId: id, drawingName });
+  const { tabs, activeId: activeTabId, openTab, closeTab, activateTab, reopenLastClosed, moveTab, hasClosedHistory } = useEditorTabs({ drawingId: id, drawingName });
   return (
     <>
       <EditorView
@@ -364,6 +364,7 @@ export const Editor: React.FC = () => {
         onActivateTab={activateTab}
         onCloseTab={closeTab}
         onReopenLastClosed={reopenLastClosed}
+        onReorderTab={moveTab}
         onOpenTabInNewTab={(tabId) => openTab(tabId, { activate: true })}
         onBackClick={handleBackClick}
         onCanvasChange={handleCanvasChange}

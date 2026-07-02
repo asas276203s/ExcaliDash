@@ -48,6 +48,7 @@ type EditorViewProps = {
   onCloseTab: (id: string) => void;
   onOpenTabInNewTab: (id: string) => void;
   onReopenLastClosed: () => void;
+  onReorderTab: (fromId: string, toIndex: number) => void;
   onBackClick: () => void;
   onCanvasChange: (elements: readonly any[], appState: any, files?: Record<string, any>) => void;
   onCanvasDropCapture: (event: React.DragEvent<HTMLDivElement>) => void;
@@ -116,6 +117,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
   onCloseTab,
   onOpenTabInNewTab,
   onReopenLastClosed,
+  onReorderTab,
   onBackClick,
   onCanvasChange,
   onCanvasDropCapture,
@@ -245,6 +247,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
         onClose={onCloseTab}
         onOpenInNewTab={onOpenTabInNewTab}
         onReopenLastClosed={onReopenLastClosed}
+        onReorderTab={onReorderTab}
         onNavigateHome={onNavigateHome}
       />
     </div>
