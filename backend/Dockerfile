@@ -10,8 +10,10 @@ RUN apk add --no-cache python3 make g++
 COPY package*.json ./
 COPY tsconfig.json ./
 
-# Install dependencies
-RUN npm ci && npm cache clean --force
+# Install dependencies (force devDeps in case build host sets NODE_ENV=production;
+# Zeabur does — without --include=dev, typescript ends up missing and `npx tsc`
+# below downloads a deprecated 1997 `tsc` package that immediately errors).
+RUN npm ci --include=dev && npm cache clean --force
 
 # Copy prisma schema
 COPY prisma ./prisma/
