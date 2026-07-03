@@ -30,6 +30,7 @@ type LogAuditEvent = (params: {
 
 export type DashboardRouteDeps = {
   prisma: PrismaClient;
+  io: import("socket.io").Server;
   requireAuth: express.RequestHandler;
   optionalAuth: express.RequestHandler;
   asyncHandler: <T = void>(

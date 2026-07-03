@@ -22,6 +22,7 @@ export const registerDrawingCreateUpdateRoutes = (
 ) => {
   const {
     prisma,
+    io,
     requireAuth,
     optionalAuth,
     asyncHandler,
@@ -37,6 +38,15 @@ export const registerDrawingCreateUpdateRoutes = (
     getRequestPrincipal,
     respondWithAuthErrorIfPresent,
   } = context;
+
+  // Tell any open editors joined to this drawing's collab room that the
+  // server-side state has changed underneath them. The frontend listens
+  // to "drawing-server-update" and reloads; without this event an MCP
+  // update would silently sit on the server and the next user save would
+  // overwrite it based on stale state.
+  const notifyServerStateChange = (drawingId: string): void => {
+    io.to(`drawing_${drawingId}`).emit("drawing-server-update", { drawingId });
+  };
   app.post(
     "/drawings",
     requireAuth,
@@ -325,6 +335,13 @@ export const registerDrawingCreateUpdateRoutes = (
         return res.status(404).json({ error: "Drawing not found" });
       }
       invalidateDrawingsCache();
+
+      // Only scene-level updates (elements/appState/files) require open
+      // editors to reload. A rename or move-to-collection doesn't need
+      // to force a full reload.
+      if (isSceneUpdate) {
+        notifyServerStateChange(id);
+      }
 
       return res.json({
         ...updatedDrawing,
