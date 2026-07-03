@@ -23,7 +23,13 @@ preload: true, }, }) ); app.use( cors({ origin: (origin, cb) => cb(null, isAllow
         )}MB - User: ${userEmail} - RequestID: ${requestId}`
 ); } } console.log(
     `[REQUEST] ${req.method} ${req.path} - User: ${userEmail} - IP: ${req.ip} - RequestID: ${requestId}`
-); next(); }); const RATE_LIMIT_WINDOW = 15 * 60 * 1000; const generalRateLimiter = rateLimit({ windowMs: RATE_LIMIT_WINDOW, max: config.rateLimitMaxRequests, message: { error: "Rate limit exceeded", message: "Too many requests, please try again later", }, standardHeaders: true, legacyHeaders: false, validate: { trustProxy: false, xForwardedForHeader: false, }, }); app.use(generalRateLimiter); registerCsrfProtection({ app, isAllowedOrigin, maxRequestsPerWindow: config.csrfMaxRequests, enableDebugLogging: process.env.DEBUG_CSRF === "true", }); app.use("/auth", authRouter); const filesFieldSchema = z
+); next(); }); const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // trustProxy MUST be true so the limiter buckets by the real client IP
+// (X-Forwarded-For) instead of the shared nginx/K8s ingress IP. Without
+// it every user's traffic appears to come from one IP and 100 concurrent
+// users share a 1000 req/15 min budget — a single active session
+// hitting /auth/status and /csrf-token on each render burns it in
+// minutes. Backend already advertises TRUST_PROXY at the app level.
+const generalRateLimiter = rateLimit({ windowMs: RATE_LIMIT_WINDOW, max: config.rateLimitMaxRequests, message: { error: "Rate limit exceeded", message: "Too many requests, please try again later", }, standardHeaders: true, legacyHeaders: false, validate: { trustProxy: true, xForwardedForHeader: true, }, }); app.use(generalRateLimiter); registerCsrfProtection({ app, isAllowedOrigin, maxRequestsPerWindow: config.csrfMaxRequests, enableDebugLogging: process.env.DEBUG_CSRF === "true", }); app.use("/auth", authRouter); const filesFieldSchema = z
 .union([z.record(z.string(), z.unknown()), z.null()])
 .optional()
 .transform((value) => (value === null ? undefined : value)); const drawingBaseSchema = z.object({ name: z.string().trim().min(1).max(255).optional(), collectionId: z.union([z.string().trim().min(1), z.null()]).optional(), preview: z.string().nullable().optional(), }); const drawingCreateSchema = drawingBaseSchema
