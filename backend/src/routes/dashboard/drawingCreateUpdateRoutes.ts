@@ -339,7 +339,13 @@ export const registerDrawingCreateUpdateRoutes = (
       // Only scene-level updates (elements/appState/files) require open
       // editors to reload. A rename or move-to-collection doesn't need
       // to force a full reload.
-      if (isSceneUpdate) {
+      //
+      // TEMPORARILY DISABLED — the frontend still triggers
+      // window.location.reload() on this event, which spams the user
+      // whenever MCP does a burst of updates. Fetch-and-merge is being
+      // shipped as a follow-up; re-enable this emit AFTER the frontend
+      // handler stops reloading.
+      if (false && isSceneUpdate) {
         notifyServerStateChange(id);
       }
 
