@@ -2,8 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject, RefObject } from "react";
 import { io, type Socket } from "socket.io-client";
 import { toast } from "sonner";
+import * as api from "../../api";
 import type { UserIdentity } from "../../utils/identity";
-import { buildRemoteSceneUpdate } from "./shared";
+import {
+  buildRemoteSceneUpdate,
+  getPersistedAppState,
+  haveSameElements,
+} from "./shared";
 
 interface Peer extends UserIdentity {
   isActive: boolean;
@@ -19,10 +24,19 @@ type UseEditorCollaborationInput = {
   lastSyncedElementOrderSigRef: MutableRefObject<string>;
   latestElementsRef: MutableRefObject<readonly any[]>;
   latestFilesRef: MutableRefObject<any>;
+  lastPersistedElementsRef: MutableRefObject<readonly any[]>;
+  lastPersistedFilesRef: MutableRefObject<Record<string, any>>;
+  currentDrawingVersionRef: MutableRefObject<number | null>;
   computeElementOrderSig: (elements: readonly any[]) => string;
   recordElementVersion: (element: any) => void;
   onAccessDenied: () => void;
 };
+
+/**
+ * Debounce window (ms) collapsing rapid drawing-server-update socket events
+ * into a single fetch-and-merge. Exposed for tests.
+ */
+export const SERVER_UPDATE_DEBOUNCE_MS = 500;
 
 const getSocketUrl = () =>
   import.meta.env.VITE_API_URL === "/api"
@@ -41,6 +55,9 @@ export const useEditorCollaboration = ({
   lastSyncedElementOrderSigRef,
   latestElementsRef,
   latestFilesRef,
+  lastPersistedElementsRef,
+  lastPersistedFilesRef,
+  currentDrawingVersionRef,
   computeElementOrderSig,
   recordElementVersion,
   onAccessDenied,
@@ -59,6 +76,11 @@ export const useEditorCollaboration = ({
   const pendingRemoteElementOrderRef = useRef<string[] | null>(null);
   const remoteFlushScheduledRef = useRef(false);
   const remoteFlushRafIdRef = useRef<number | null>(null);
+  const serverUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const serverUpdateFetchInFlightRef = useRef(false);
+  const serverUpdatePendingRef = useRef(false);
 
   useEffect(() => {
     setSocketMe(me);
@@ -268,12 +290,91 @@ export const useEditorCollaboration = ({
         scheduleRemoteFlush();
       },
     );
+    const fetchAndMergeServerUpdate = async () => {
+      if (!drawingId) return;
+      if (serverUpdateFetchInFlightRef.current) {
+        // Coalesce: mark pending and let the in-flight fetch handle it after.
+        serverUpdatePendingRef.current = true;
+        return;
+      }
+      serverUpdateFetchInFlightRef.current = true;
+      try {
+        const data = await api.getDrawing(drawingId);
+        const responseVersion =
+          typeof data.version === "number" ? data.version : null;
+        const knownVersion = currentDrawingVersionRef.current;
+        // No new server version to merge — skip.
+        if (
+          responseVersion !== null &&
+          knownVersion !== null &&
+          responseVersion === knownVersion
+        ) {
+          return;
+        }
+        const hasLocalPendingEdits = !haveSameElements(
+          lastPersistedElementsRef.current,
+          latestElementsRef.current,
+        );
+        if (hasLocalPendingEdits) {
+          // Safe strategy: do not clobber unsaved local edits. The user's next
+          // save hits the backend's version-conflict path, which is authoritative.
+          toast.info("Server changes available — save your local edits first");
+          return;
+        }
+        const elements = Array.isArray(data.elements) ? data.elements : [];
+        const files =
+          data.files && typeof data.files === "object" ? data.files : {};
+        const persistedAppState = getPersistedAppState(data.appState || {});
+        const excalApi = excalidrawAPI.current;
+        if (excalApi && typeof excalApi.updateScene === "function") {
+          isSyncing.current = true;
+          try {
+            excalApi.updateScene({
+              elements,
+              appState: persistedAppState,
+              captureUpdate: "NEVER",
+            });
+            const filesArray = Object.values(files);
+            if (filesArray.length > 0 && typeof excalApi.addFiles === "function") {
+              excalApi.addFiles(filesArray);
+            }
+          } finally {
+            isSyncing.current = false;
+          }
+        }
+        // Sync all baseline refs so subsequent local saves target the new version.
+        latestElementsRef.current = elements;
+        latestFilesRef.current = files;
+        lastSyncedFilesRef.current = files;
+        lastPersistedFilesRef.current = files;
+        lastPersistedElementsRef.current = elements;
+        if (responseVersion !== null) {
+          currentDrawingVersionRef.current = responseVersion;
+        }
+        lastSyncedElementOrderSigRef.current = computeElementOrderSig(elements);
+        elements.forEach((el: any) => recordElementVersion(el));
+        toast.success("Drawing updated from server");
+      } catch (err) {
+        console.warn("[Editor] Failed to fetch server-side drawing update", err);
+      } finally {
+        serverUpdateFetchInFlightRef.current = false;
+        if (serverUpdatePendingRef.current) {
+          serverUpdatePendingRef.current = false;
+          // Re-run once more to pick up anything that arrived while we fetched.
+          void fetchAndMergeServerUpdate();
+        }
+      }
+    };
     socket.on("drawing-server-update", (payload: { drawingId?: string }) => {
       if (!payload?.drawingId || payload.drawingId !== drawingId) return;
-      toast.info(
-        "Drawing storage changed on the server. Reloading the editor.",
-      );
-      window.location.reload();
+      // Debounce: collapse a burst of events into one fetch after 500ms of quiet.
+      if (serverUpdateTimerRef.current) {
+        clearTimeout(serverUpdateTimerRef.current);
+      }
+      serverUpdateTimerRef.current = setTimeout(() => {
+        serverUpdateTimerRef.current = null;
+        void fetchAndMergeServerUpdate();
+      }, SERVER_UPDATE_DEBOUNCE_MS);
     });
     const handleActivity = (isActive: boolean) => {
       socket.emit("user-activity", { drawingId, isActive });
@@ -305,6 +406,11 @@ export const useEditorCollaboration = ({
       pendingRemoteElementsRef.current.clear();
       pendingRemoteFilesRef.current = {};
       pendingRemoteElementOrderRef.current = null;
+      if (serverUpdateTimerRef.current) {
+        clearTimeout(serverUpdateTimerRef.current);
+        serverUpdateTimerRef.current = null;
+      }
+      serverUpdatePendingRef.current = false;
       cancelAnimationFrame(animationFrameId.current);
     };
   }, [
@@ -317,6 +423,9 @@ export const useEditorCollaboration = ({
     lastSyncedElementOrderSigRef,
     latestElementsRef,
     latestFilesRef,
+    lastPersistedElementsRef,
+    lastPersistedFilesRef,
+    currentDrawingVersionRef,
     computeElementOrderSig,
     recordElementVersion,
     onAccessDenied,
