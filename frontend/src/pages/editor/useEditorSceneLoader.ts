@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { NavigateFunction } from "react-router-dom";
 import type { MutableRefObject } from "react";
 import { toast } from "sonner";
@@ -86,7 +86,20 @@ export const useEditorSceneLoader = ({
     refs.excalidrawAPI.current = null;
   }, [refs]);
 
+  // Defence in depth against tab-swap races: if the parent Editor is
+  // NOT keyed by id for some reason (dev-tools swap, refactor regression,
+  // etc.) an in-flight fetch for tab A can still resolve after the user
+  // has switched to tab B and clobber B's state. Track each effect
+  // invocation with a "run token" — whichever run is current at effect
+  // start is captured in this ref; when the fetch resolves we discard
+  // the result unless we're still the current run. See
+  // `useEditorSceneLoader.race.test.ts` for the reproduction.
+  const activeLoadTokenRef = useRef(0);
+
   useEffect(() => {
+    const loadToken = ++activeLoadTokenRef.current;
+    const isCurrentLoad = () => activeLoadTokenRef.current === loadToken;
+
     resetRefs();
     setIsReady(false);
     setIsSceneLoading(true);
@@ -95,6 +108,7 @@ export const useEditorSceneLoader = ({
 
     const loadData = async () => {
       if (!id) {
+        if (!isCurrentLoad()) return;
         setInitialData(buildEmptyScene());
         setIsSceneLoading(false);
         return;
@@ -110,6 +124,11 @@ export const useEditorSceneLoader = ({
           api.getDrawing(id),
           libraryItemsPromise,
         ]);
+        if (!isCurrentLoad()) {
+          // A newer load superseded us — do not touch state or refs, they
+          // now belong to the newer drawing id.
+          return;
+        }
         setDrawingName(data.name);
         setAccessLevel(
           data.accessLevel === "view" ||
@@ -158,6 +177,11 @@ export const useEditorSceneLoader = ({
           libraryItems,
         });
       } catch (err) {
+        if (!isCurrentLoad()) {
+          // Superseded — swallow the error silently; the current run owns
+          // any user-facing signalling for its own drawing id.
+          return;
+        }
         console.error("Failed to load drawing", err);
         let message = "Failed to load drawing";
         if (api.isAxiosError(err)) {
@@ -197,7 +221,9 @@ export const useEditorSceneLoader = ({
         setLoadError(message);
         setInitialData(null);
       } finally {
-        setIsSceneLoading(false);
+        if (isCurrentLoad()) {
+          setIsSceneLoading(false);
+        }
       }
     };
 

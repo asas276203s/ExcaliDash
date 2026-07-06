@@ -20,7 +20,28 @@ import { useEditorCommands } from "./editor/useEditorCommands";
 import { useEditorElementTracking } from "./editor/useEditorElementTracking";
 import { useEditorBroadcast } from "./editor/useEditorBroadcast";
 import { useEditorTabs } from "./editor/useEditorTabs";
+
+/**
+ * Route-facing wrapper that forces a full remount whenever the drawing id
+ * changes. Remounting is what guarantees stale scene state (initialData,
+ * refs, in-flight fetches) from the previous tab cannot bleed into the new
+ * tab: React tears down `EditorInner` and every hook it owns when the key
+ * flips, so the freshly mounted instance boots from an empty slate while
+ * the previous tab's `setState` callbacks land on an unmounted component
+ * and become no-ops.
+ *
+ * Without the key, switching /editor/A → /editor/B keeps the same Editor
+ * instance alive: React commits a render with `id=B` while state still
+ * holds `initialData=A_data` (state updates lag until the next effect
+ * flush), so Excalidraw briefly renders A's elements under the new tab —
+ * exactly the "tab 1 leaks into tab 2" symptom the user reported.
+ */
 export const Editor: React.FC = () => {
+  const { id } = useParams<{ id: string }>();
+  return <EditorInner key={id ?? "no-drawing-id"} />;
+};
+
+const EditorInner: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
