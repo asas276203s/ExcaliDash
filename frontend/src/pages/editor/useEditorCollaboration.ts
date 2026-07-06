@@ -102,14 +102,11 @@ export const useEditorCollaboration = ({
       (window as any).__EXCALIDASH_SOCKET_STATUS__ = {
         connected: socket.connected,
       };
-      socket.on("connect", () => {
-        (window as any).__EXCALIDASH_SOCKET_STATUS__ = { connected: true };
-      });
       socket.on("disconnect", () => {
         (window as any).__EXCALIDASH_SOCKET_STATUS__ = { connected: false };
       });
     }
-    socket.emit("join-room", { drawingId, user: me }, (payload: any) => {
+    const handleJoinAck = (payload: any) => {
       const serverUser = payload?.user;
       if (!serverUser || typeof serverUser.id !== "string") return;
       const next: UserIdentity = {
@@ -128,7 +125,29 @@ export const useEditorCollaboration = ({
       if (lastUsers) {
         setPeers(lastUsers.filter((u) => u.id !== next.id));
       }
+    };
+    // Re-join the drawing's collab room on EVERY (re)connect. Rooms are
+    // server-side state keyed by socket.id; socket.io's built-in auto-
+    // reconnect assigns a NEW socket.id on each reconnect, so a client that
+    // hit a transient network hiccup (tab suspend/resume, laptop sleep, mobile
+    // network switch) is silently dropped from `drawing_${id}` and stops
+    // receiving `drawing-server-update` broadcasts — including MCP writes.
+    // Without this listener, some open editors miss updates and others
+    // don't, exactly matching the flaky symptom users reported. Server-side
+    // join-room is idempotent (users filtered by id + socket.join no-op on
+    // repeat), so a duplicate emit at first connect is harmless.
+    socket.on("connect", () => {
+      if (import.meta.env.DEV) {
+        (window as any).__EXCALIDASH_SOCKET_STATUS__ = { connected: true };
+      }
+      socket.emit("join-room", { drawingId, user: me }, handleJoinAck);
     });
+    // In tests the mock socket reports connected: true synchronously; in
+    // production socket.connected is false until the first real connect
+    // event, at which point the listener above fires.
+    if (socket.connected) {
+      socket.emit("join-room", { drawingId, user: me }, handleJoinAck);
+    }
     const renderLoop = () => {
       if (cursorBuffer.current.size > 0 && excalidrawAPI.current) {
         const collaborators = new Map<string, any>(
@@ -392,6 +411,8 @@ export const useEditorCollaboration = ({
       window.removeEventListener("blur", onBlur);
       document.removeEventListener("mouseenter", onMouseEnter);
       document.removeEventListener("mouseleave", onMouseLeave);
+      socket.off("connect");
+      socket.off("disconnect");
       socket.off("presence-update");
       socket.off("error");
       socket.off("cursor-move");

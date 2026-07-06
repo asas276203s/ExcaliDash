@@ -266,6 +266,51 @@ describe("useEditorCollaboration drawing-server-update", () => {
     expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
   });
 
+  it("re-joins the drawing room on socket reconnect", async () => {
+    // Regression guard for the "MCP update not delivered to all users" bug.
+    // socket.io auto-reconnects after network hiccups (tab suspend, sleep,
+    // mobile switch) with a NEW server-side socket.id, dropping the client
+    // out of `drawing_${id}`. The hook must re-emit join-room on every
+    // connect event so the client rejoins the room and keeps receiving
+    // drawing-server-update broadcasts.
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [],
+      appState: {},
+      files: {},
+      version: 1,
+    });
+    const props = buildProps();
+    renderHook(() => useEditorCollaboration(props));
+    // Initial mount fires join-room via the socket.connected=true shortcut
+    // baked into the fake socket. Grab the count.
+    await vi.waitFor(() => {
+      const joinCalls = fakeSocket.emit.mock.calls.filter(
+        ([evt]: any[]) => evt === "join-room",
+      );
+      expect(joinCalls.length).toBeGreaterThanOrEqual(1);
+    });
+    const initialJoinCount = fakeSocket.emit.mock.calls.filter(
+      ([evt]: any[]) => evt === "join-room",
+    ).length;
+    // Simulate socket.io auto-reconnect: the connect handler fires again.
+    const connectHandler = socketHandlers.get("connect");
+    expect(connectHandler).toBeDefined();
+    act(() => {
+      connectHandler!();
+    });
+    // Rejoin must have happened.
+    const afterReconnectJoinCount = fakeSocket.emit.mock.calls.filter(
+      ([evt]: any[]) => evt === "join-room",
+    ).length;
+    expect(afterReconnectJoinCount).toBeGreaterThan(initialJoinCount);
+    const lastJoinCall = fakeSocket.emit.mock.calls
+      .filter(([evt]: any[]) => evt === "join-room")
+      .at(-1);
+    expect(lastJoinCall?.[1]).toEqual({ drawingId: "d1", user: props.me });
+    expect(typeof lastJoinCall?.[2]).toBe("function");
+  });
+
   it("skips update when server version matches known version", async () => {
     const props = buildProps();
     props.currentDrawingVersionRef.current = 7;
