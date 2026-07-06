@@ -126,8 +126,14 @@ const EditorInner: React.FC = () => {
       replace: true,
     });
   }, [id, location.hash, location.pathname, location.search, navigate]);
-  const { peers, socketMeRef, socketRef, isSyncing, onPointerUpdate } =
-    useEditorCollaboration({
+  const {
+    peers,
+    socketMeRef,
+    socketRef,
+    isSyncing,
+    isRemoteSyncing,
+    onPointerUpdate,
+  } = useEditorCollaboration({
       drawingId: id,
       me,
       isReady,
@@ -376,6 +382,7 @@ const EditorInner: React.FC = () => {
         isRenaming={isRenaming}
         isSavingOnLeave={isSavingOnLeave}
         isSceneLoading={isSceneLoading}
+        isRemoteSyncing={isRemoteSyncing}
         langCode={langCode}
         loadError={loadError}
         me={me}

@@ -35,6 +35,7 @@ type EditorViewProps = {
   isRenaming: boolean;
   isSavingOnLeave: boolean;
   isSceneLoading: boolean;
+  isRemoteSyncing?: boolean;
   langCode: string;
   loadError: string | null;
   me: UserIdentity;
@@ -104,6 +105,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
   isRenaming,
   isSavingOnLeave,
   isSceneLoading,
+  isRemoteSyncing = false,
   langCode,
   loadError,
   me,
@@ -309,7 +311,57 @@ export const EditorView: React.FC<EditorViewProps> = ({
           </span>
         </div>
       )}
+      <RemoteSyncOverlay visible={isRemoteSyncing} />
       <Toaster position="bottom-center" />
+    </div>
+  </div>
+);
+
+/**
+ * Brief overlay shown while a remote (MCP or another client) update is being
+ * applied to the canvas. Two layers:
+ *
+ * 1. A full-canvas backdrop with pointer-events on that visually dims and
+ *    hard-blocks new gestures during the apply window — this is what makes
+ *    the crash impossible even if the apply somehow takes noticeable time
+ *    (network stall, huge scene).
+ *
+ * 2. A small top-center pill that names what is happening so the user is
+ *    not startled by the (brief) freeze. Vibe matches Notion/Linear/Figma
+ *    sync indicators — low-key, informative, quickly gone.
+ *
+ * Both fade in/out via CSS transitions; when idle the whole subtree is
+ * `pointer-events: none` so it never intercepts events.
+ */
+const RemoteSyncOverlay: React.FC<{ visible: boolean }> = ({ visible }) => (
+  <div
+    aria-hidden={!visible}
+    className={clsx(
+      "absolute inset-0 z-30 flex justify-center transition-opacity duration-150",
+      visible
+        ? "opacity-100 pointer-events-auto cursor-wait"
+        : "opacity-0 pointer-events-none",
+    )}
+    // Very subtle dim + blur — enough to signal "not interactive right now"
+    // without hiding the canvas content. Backdrop-filter degrades to plain
+    // opacity in browsers without support, which is fine.
+    style={{
+      backgroundColor: "rgba(15, 23, 42, 0.06)",
+      backdropFilter: "blur(0.5px)",
+      WebkitBackdropFilter: "blur(0.5px)",
+    }}
+  >
+    <div
+      className={clsx(
+        "mt-4 flex items-center gap-2 px-3 py-1.5 rounded-full",
+        "bg-white/95 dark:bg-neutral-900/95 border border-gray-200 dark:border-neutral-700 shadow-sm",
+        "text-xs font-medium text-gray-700 dark:text-gray-200",
+        "transition-transform duration-150",
+        visible ? "translate-y-0" : "-translate-y-2",
+      )}
+    >
+      <Loader2 size={12} className="animate-spin text-indigo-500" />
+      <span>同步中…</span>
     </div>
   </div>
 );

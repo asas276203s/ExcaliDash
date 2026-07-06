@@ -311,6 +311,57 @@ describe("useEditorCollaboration drawing-server-update", () => {
     expect(typeof lastJoinCall?.[2]).toBe("function");
   });
 
+  it("defers updateScene while a user gesture is active, then applies", async () => {
+    // Regression guard for the MCP-mid-drag crash. When a remote update
+    // arrives while the user is dragging/resizing/drawing, applying the
+    // new elements array immediately would leave Excalidraw's internal
+    // pointerDownState holding stale element refs → crash on next
+    // pointermove/pointerup. The hook must hold the apply until the
+    // gesture ends.
+    const props = buildProps();
+    const persisted = [{ id: "e1", version: 1, versionNonce: 1, updated: 1 }];
+    props.lastPersistedElementsRef.current = persisted;
+    props.latestElementsRef.current = persisted;
+    props.currentDrawingVersionRef.current = 1;
+    // Simulate a live drag: cursorButton === "down" + selectedElementsAreBeingDragged.
+    let simulatedCursor: "up" | "down" = "down";
+    props.excalidrawAPI.current.getAppState = vi.fn(() => ({
+      collaborators: new Map(),
+      cursorButton: simulatedCursor,
+      selectedElementsAreBeingDragged: simulatedCursor === "down",
+    }));
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [{ id: "e1", version: 9, versionNonce: 9, updated: 9 }],
+      appState: {},
+      files: {},
+      version: 4,
+    });
+    renderHook(() => useEditorCollaboration(props));
+    emitServerUpdate();
+    // Advance past debounce. Fetch resolves, but updateScene must NOT
+    // fire while the drag is in progress.
+    await act(async () => {
+      vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS + 50);
+    });
+    // Yield microtasks so the fetch promise chain runs — up until it hits
+    // the waitForGestureEnd rAF poll, which will keep spinning.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
+    // End the gesture: cursor up, drag flag clears.
+    simulatedCursor = "up";
+    // Poll drives the rAF loop; jsdom's rAF fires on next timer tick.
+    await act(async () => {
+      // Multiple rAF ticks so the poll observes cursor: up.
+      vi.advanceTimersByTime(50);
+    });
+    await vi.waitFor(() => {
+      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
+    });
+    expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
+  });
+
   it("skips update when server version matches known version", async () => {
     const props = buildProps();
     props.currentDrawingVersionRef.current = 7;

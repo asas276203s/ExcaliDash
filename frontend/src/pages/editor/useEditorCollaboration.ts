@@ -65,6 +65,7 @@ export const useEditorCollaboration = ({
   const [socketMe, setSocketMe] = useState<UserIdentity>(me);
   const socketMeRef = useRef<UserIdentity>(socketMe);
   const [peers, setPeers] = useState<Peer[]>([]);
+  const [isRemoteSyncing, setIsRemoteSyncing] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const lastPresenceUsersRef = useRef<Peer[] | null>(null);
   const lastCursorEmit = useRef<number>(0);
@@ -309,6 +310,59 @@ export const useEditorCollaboration = ({
         scheduleRemoteFlush();
       },
     );
+    // A remote-driven `updateScene({ elements })` mid-drag was crashing the
+    // editor: Excalidraw's internal `pointerDownState` holds identity refs
+    // into the pre-swap elements array (the element being dragged / resized
+    // / drawn), and swapping the whole array out from under it makes the
+    // next pointermove/pointerup handler dereference a stale element.
+    //
+    // The fix is lock-and-apply: while a user gesture is in progress we
+    // hold the merge back, then briefly lock the canvas and apply. Callers
+    // observing `isRemoteSyncing` render an overlay so the user sees what
+    // is happening; the overlay is not shown during the gesture wait so we
+    // don't yank feedback out of an in-progress drag.
+    const isUserGestureActive = (): boolean => {
+      const api = excalidrawAPI.current;
+      if (!api || typeof api.getAppState !== "function") return false;
+      let state: any;
+      try {
+        state = api.getAppState();
+      } catch {
+        return false;
+      }
+      if (!state) return false;
+      return Boolean(
+        state.cursorButton === "down" ||
+          state.newElement ||
+          state.resizingElement ||
+          state.selectionElement ||
+          state.multiElement ||
+          state.editingLinearElement ||
+          state.editingTextElement ||
+          state.selectedElementsAreBeingDragged ||
+          state.isRotating ||
+          state.isResizing ||
+          state.isCropping,
+      );
+    };
+    const waitForGestureEnd = () =>
+      new Promise<void>((resolve) => {
+        const start = Date.now();
+        // Hard ceiling — if something wedges pointerDown state true for
+        // >5s we still apply, but log so we know.
+        const HARD_TIMEOUT_MS = 5_000;
+        const tick = () => {
+          if (!isUserGestureActive()) return resolve();
+          if (Date.now() - start > HARD_TIMEOUT_MS) {
+            console.warn(
+              "[Editor] Gave up waiting for gesture end after 5s — applying remote update anyway",
+            );
+            return resolve();
+          }
+          requestAnimationFrame(tick);
+        };
+        tick();
+      });
     const fetchAndMergeServerUpdate = async () => {
       if (!drawingId) return;
       if (serverUpdateFetchInFlightRef.current) {
@@ -330,21 +384,38 @@ export const useEditorCollaboration = ({
         ) {
           return;
         }
-        const hasLocalPendingEdits = !haveSameElements(
-          lastPersistedElementsRef.current,
-          latestElementsRef.current,
-        );
-        if (hasLocalPendingEdits) {
+        const hasLocalPendingEdits = () =>
+          !haveSameElements(
+            lastPersistedElementsRef.current,
+            latestElementsRef.current,
+          );
+        if (hasLocalPendingEdits()) {
           // Safe strategy: do not clobber unsaved local edits. The user's next
           // save hits the backend's version-conflict path, which is authoritative.
           toast.info("Server 有更新、請先儲存你的改動");
           return;
+        }
+        // Hold the apply until the user's gesture completes. This is the
+        // core of the crash fix — see `isUserGestureActive` above.
+        if (isUserGestureActive()) {
+          await waitForGestureEnd();
+          // The gesture may have committed local edits (onChange fires on
+          // pointer up). Re-check so we don't overwrite them.
+          if (hasLocalPendingEdits()) {
+            toast.info("Server 有更新、請先儲存你的改動");
+            return;
+          }
         }
         const elements = Array.isArray(data.elements) ? data.elements : [];
         const files =
           data.files && typeof data.files === "object" ? data.files : {};
         const persistedAppState = getPersistedAppState(data.appState || {});
         const excalApi = excalidrawAPI.current;
+        // Lock the UI: an overlay renders in EditorView while this is true so
+        // the user gets "同步中…" feedback instead of a silent freeze. The
+        // whole apply is one microtask window; the overlay is visible for
+        // the tiny slice between setState and finally.
+        setIsRemoteSyncing(true);
         if (excalApi && typeof excalApi.updateScene === "function") {
           isSyncing.current = true;
           try {
@@ -377,6 +448,7 @@ export const useEditorCollaboration = ({
         console.warn("[Editor] Failed to fetch server-side drawing update", err);
       } finally {
         serverUpdateFetchInFlightRef.current = false;
+        setIsRemoteSyncing(false);
         if (serverUpdatePendingRef.current) {
           serverUpdatePendingRef.current = false;
           // Re-run once more to pick up anything that arrived while we fetched.
@@ -476,6 +548,7 @@ export const useEditorCollaboration = ({
     socketMeRef,
     socketRef,
     isSyncing,
+    isRemoteSyncing,
     onPointerUpdate,
   };
 };
