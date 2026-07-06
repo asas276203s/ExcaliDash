@@ -6,17 +6,14 @@ import { toast } from "sonner";
 import * as api from "../../api";
 import { compressExcalidrawFiles } from "../../utils/imageCompression";
 import {
+  DrawingSaveConflictError,
+  resolveVersionConflict,
+} from "./persistenceConflict";
+import {
   getFilesDelta,
   getPersistedAppState,
   hasRenderableElements,
 } from "./shared";
-
-class DrawingSaveConflictError extends Error {
-  constructor(message = "Drawing version conflict") {
-    super(message);
-    this.name = "DrawingSaveConflictError";
-  }
-}
 
 type PersistenceRefs = {
   currentDrawingVersion: MutableRefObject<number | null>;
@@ -153,39 +150,53 @@ export const useEditorPersistence = ({
       const normalizedElementsForSave = Array.from(
         normalizeImageElementStatus(persistableElements, persistableFiles),
       );
-      const persistScene = async (attempt: number): Promise<void> => {
+      const persistScene = async (
+        attempt: number,
+        elementsForAttempt: any[],
+        filesFlag: boolean,
+        filesForAttempt: Record<string, any>,
+      ): Promise<void> => {
         try {
           const updated = await api.updateDrawing(drawingId, {
-            elements: normalizedElementsForSave,
+            elements: elementsForAttempt,
             appState: persistableAppState,
-            ...(filesChangedSincePersist ? { files: persistableFiles } : {}),
+            ...(filesFlag ? { files: filesForAttempt } : {}),
             version: refs.currentDrawingVersion.current ?? undefined,
           });
           if (typeof updated.version === "number") {
             refs.currentDrawingVersion.current = updated.version;
           }
-          refs.lastPersistedElements.current = normalizedElementsForSave;
-          if (filesChangedSincePersist) {
-            refs.lastPersistedFiles.current = persistableFiles;
+          refs.lastPersistedElements.current = elementsForAttempt;
+          if (filesFlag) {
+            refs.lastPersistedFiles.current = filesForAttempt;
           }
         } catch (err) {
-          if (api.isAxiosError(err) && err.response?.status === 409) {
-            const reportedVersion = Number(err.response?.data?.currentVersion);
-            const hasReportedVersion =
-              Number.isInteger(reportedVersion) && reportedVersion > 0;
-            if (hasReportedVersion) {
-              refs.currentDrawingVersion.current = reportedVersion;
-            }
-            if (attempt === 0 && hasReportedVersion) {
-              await persistScene(1);
-              return;
-            }
+          if (!api.isAxiosError(err) || err.response?.status !== 409) {
+            throw err;
+          }
+          if (attempt > 0) {
+            // Already merged and retried once — a second 409 means yet another
+            // writer landed between our fetch and our retry. Surface it.
             throw new DrawingSaveConflictError();
           }
-          throw err;
+          const { merged, mergedFiles, nextFilesFlag } =
+            await resolveVersionConflict({
+              drawingId,
+              err,
+              refs,
+              localSnapshotElements: elementsForAttempt,
+              localSnapshotFiles: filesForAttempt,
+              persistableAppState,
+            });
+          await persistScene(1, merged, nextFilesFlag, mergedFiles);
         }
       };
-      await persistScene(0);
+      await persistScene(
+        0,
+        normalizedElementsForSave,
+        filesChangedSincePersist,
+        persistableFiles,
+      );
     } catch (err) {
       if (err instanceof DrawingSaveConflictError) {
         toast.error("Drawing changed in another tab. Refresh to load latest.");
