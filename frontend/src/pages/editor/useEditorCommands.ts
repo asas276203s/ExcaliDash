@@ -182,7 +182,7 @@ export const useEditorCommands = ({
       }
     } catch (err) {
       console.error("Failed to save on back navigation", err);
-      toast.error("Failed to save changes. Please retry before leaving.");
+      toast.error("儲存失敗、離開前請再試一次");
     } finally {
       setIsSavingOnLeave(false);
     }

@@ -318,7 +318,7 @@ export const useEditorCollaboration = ({
         if (hasLocalPendingEdits) {
           // Safe strategy: do not clobber unsaved local edits. The user's next
           // save hits the backend's version-conflict path, which is authoritative.
-          toast.info("Server changes available — save your local edits first");
+          toast.info("Server 有更新、請先儲存你的改動");
           return;
         }
         const elements = Array.isArray(data.elements) ? data.elements : [];
@@ -353,7 +353,7 @@ export const useEditorCollaboration = ({
         }
         lastSyncedElementOrderSigRef.current = computeElementOrderSig(elements);
         elements.forEach((el: any) => recordElementVersion(el));
-        toast.success("Drawing updated from server");
+        toast.success("已從 Server 同步最新內容");
       } catch (err) {
         console.warn("[Editor] Failed to fetch server-side drawing update", err);
       } finally {

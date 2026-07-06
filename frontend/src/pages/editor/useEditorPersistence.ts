@@ -199,11 +199,11 @@ export const useEditorPersistence = ({
       );
     } catch (err) {
       if (err instanceof DrawingSaveConflictError) {
-        toast.error("Drawing changed in another tab. Refresh to load latest.");
+        toast.error("另一分頁已修改此圖、請重新載入以取得最新版本");
         throw err;
       }
       console.error("Failed to save drawing", err);
-      toast.error("Failed to save changes");
+      toast.error("儲存失敗");
       throw err;
     }
   };
@@ -294,7 +294,7 @@ export const useEditorPersistence = ({
     } catch (err) {
       console.error("Failed to save library", err);
       if (api.isAxiosError(err) && err.response?.status === 401) return;
-      toast.error("Failed to save library");
+      toast.error("素材庫儲存失敗");
     }
   };
 

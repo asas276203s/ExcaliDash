@@ -213,7 +213,7 @@ describe("useEditorCollaboration drawing-server-update", () => {
     expect(props.currentDrawingVersionRef.current).toBe(4);
     expect(props.latestElementsRef.current).toEqual(nextElements);
     expect(props.lastPersistedElementsRef.current).toEqual(nextElements);
-    expect(toastSuccess).toHaveBeenCalledWith("Drawing updated from server");
+    expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
   });
 
   it("does NOT merge when local pending edits are present", async () => {
@@ -239,7 +239,7 @@ describe("useEditorCollaboration drawing-server-update", () => {
     });
     await vi.waitFor(() => {
       expect(toastInfo).toHaveBeenCalledWith(
-        "Server changes available — save your local edits first",
+        "Server 有更新、請先儲存你的改動",
       );
     });
     expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
