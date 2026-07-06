@@ -5,6 +5,7 @@ import { UploadProvider } from './context/UploadContext';
 import { AuthProvider } from './context/AuthContext';
 import { TabsProvider } from './context/TabsContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
+import { AppUpdateBanner } from './components/AppUpdateBanner';
 import { Loader2 } from 'lucide-react';
 
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
@@ -31,6 +32,7 @@ function App() {
         <AuthProvider>
           <TabsProvider>
           <UploadProvider>
+            <AppUpdateBanner />
             <Suspense fallback={<PageLoader />}>
               <Routes>
                 <Route path="/login" element={<Login />} />
