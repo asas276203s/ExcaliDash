@@ -132,6 +132,7 @@ const EditorInner: React.FC = () => {
     socketRef,
     isSyncing,
     isRemoteSyncing,
+    isRemoteSyncEscalated,
     onPointerUpdate,
   } = useEditorCollaboration({
       drawingId: id,
@@ -383,6 +384,7 @@ const EditorInner: React.FC = () => {
         isSavingOnLeave={isSavingOnLeave}
         isSceneLoading={isSceneLoading}
         isRemoteSyncing={isRemoteSyncing}
+        isRemoteSyncEscalated={isRemoteSyncEscalated}
         langCode={langCode}
         loadError={loadError}
         me={me}

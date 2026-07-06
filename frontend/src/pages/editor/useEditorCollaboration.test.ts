@@ -34,10 +34,16 @@ vi.mock("sonner", () => ({
   },
 }));
 
-// Drawing fetch. Each test rebinds `getDrawingImpl`.
-let getDrawingImpl: (id: string) => Promise<any> = async () => ({});
+// Drawing fetch. Each test rebinds `getDrawingImpl`. The 2nd arg is the
+// options bag (currently { signal }); tests may inspect it via the shared
+// spy exposed below.
+const getDrawingSpy = vi.fn(async (_id: string, _opts?: any) => ({} as any));
+let getDrawingImpl: (id: string, opts?: any) => Promise<any> = async () => ({});
 vi.mock("../../api", () => ({
-  getDrawing: (id: string) => getDrawingImpl(id),
+  getDrawing: (id: string, opts?: any) => {
+    getDrawingSpy(id, opts);
+    return getDrawingImpl(id, opts);
+  },
   // Passthrough — the hook doesn't use these but the module barrel re-exports.
   getLibrary: vi.fn(async () => []),
   isAxiosError: vi.fn(() => false),
@@ -47,6 +53,8 @@ vi.mock("../../api", () => ({
 import {
   useEditorCollaboration,
   SERVER_UPDATE_DEBOUNCE_MS,
+  REMOTE_FETCH_TIMEOUT_MS,
+  REMOTE_SYNC_ESCALATE_MS,
 } from "./useEditorCollaboration";
 
 const makeRef = <T>(value: T): MutableRefObject<T> => ({ current: value });
@@ -104,6 +112,7 @@ describe("useEditorCollaboration drawing-server-update", () => {
     toastInfo.mockClear();
     toastSuccess.mockClear();
     toastError.mockClear();
+    getDrawingSpy.mockClear();
     // Guard: fail the test if anything calls window.location.reload().
     // jsdom's location has non-configurable props, so replace the whole object.
     Object.defineProperty(window, "location", {
@@ -360,6 +369,222 @@ describe("useEditorCollaboration drawing-server-update", () => {
       expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
     });
     expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
+  });
+
+  // BUG-15: hard cap the /drawings/:id fetch. If backend hangs, we abort
+  // via AbortController after REMOTE_FETCH_TIMEOUT_MS and dismiss the pill.
+  it("passes an AbortSignal to getDrawing so a stuck fetch can be aborted", async () => {
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [],
+      appState: {},
+      files: {},
+      version: 2,
+    });
+    const props = buildProps();
+    renderHook(() => useEditorCollaboration(props));
+    emitServerUpdate();
+    await act(async () => {
+      vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+    });
+    await vi.waitFor(() => {
+      expect(getDrawingSpy).toHaveBeenCalled();
+    });
+    const [, opts] = getDrawingSpy.mock.calls[0];
+    expect(opts).toBeTruthy();
+    expect(opts.signal).toBeInstanceOf(AbortSignal);
+    // The timeout is real — even after 100ms nothing has fired.
+    expect(opts.signal.aborted).toBe(false);
+    // Confirm the timeout is exposed and reasonable (guards against
+    // accidental 0 / undefined).
+    expect(REMOTE_FETCH_TIMEOUT_MS).toBeGreaterThan(1_000);
+  });
+
+  it("aborts the getDrawing fetch and dismisses the pill after the hard timeout", async () => {
+    // Simulate a hung backend by returning a never-resolving promise until
+    // the abort signal fires. This is the real production shape: axios
+    // rejects with a CanceledError when the signal aborts.
+    getDrawingImpl = async (_id: string, opts?: any) =>
+      new Promise((_resolve, reject) => {
+        opts.signal?.addEventListener("abort", () => {
+          const err: any = new Error("aborted");
+          err.name = "CanceledError";
+          reject(err);
+        });
+      });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const props = buildProps();
+      renderHook(() => useEditorCollaboration(props));
+      emitServerUpdate();
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+      });
+      // Fetch fired.
+      await vi.waitFor(() => expect(getDrawingSpy).toHaveBeenCalled());
+      // Advance past the hard timeout — the AbortController should fire.
+      await act(async () => {
+        vi.advanceTimersByTime(REMOTE_FETCH_TIMEOUT_MS + 10);
+      });
+      // The catch block logs and the finally dismisses the pill (no
+      // updateScene, no crash, no toast.success).
+      await vi.waitFor(() => {
+        expect(warnSpy).toHaveBeenCalled();
+      });
+      expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
+      expect(toastSuccess).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  // BUG-14: mirror the suspiciousBlankLoad guard from the scene loader.
+  // If backend transiently returns an empty payload while the local
+  // scene is non-empty and the server itself advertises a preview, treat
+  // it as suspicious and DO NOT clobber.
+  it("refuses to clobber a non-empty local scene with an empty remote payload when server advertises a preview", async () => {
+    const props = buildProps();
+    const persisted = [{ id: "e1", isDeleted: false }];
+    props.lastPersistedElementsRef.current = persisted;
+    props.latestElementsRef.current = persisted;
+    props.currentDrawingVersionRef.current = 1;
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [],
+      appState: {},
+      files: {},
+      version: 4,
+      preview: "data:image/svg+xml;base64,abc",
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      renderHook(() => useEditorCollaboration(props));
+      emitServerUpdate();
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+      });
+      await vi.waitFor(() => expect(getDrawingSpy).toHaveBeenCalled());
+      // Give the fetch chain a couple of microtasks to settle.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
+      expect(toastSuccess).not.toHaveBeenCalled();
+      // The warn is the diagnostic breadcrumb.
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("suspicious blank"),
+        expect.anything(),
+      );
+      // Local scene untouched.
+      expect(props.latestElementsRef.current).toEqual(persisted);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("allows empty remote payload when local scene is also empty (fresh drawing)", async () => {
+    const props = buildProps();
+    props.lastPersistedElementsRef.current = [];
+    props.latestElementsRef.current = [];
+    props.currentDrawingVersionRef.current = 1;
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [],
+      appState: {},
+      files: {},
+      version: 4,
+      preview: "data:image/svg+xml;base64,abc",
+    });
+    renderHook(() => useEditorCollaboration(props));
+    emitServerUpdate();
+    await act(async () => {
+      vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+    });
+    await vi.waitFor(() => {
+      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
+    });
+  });
+
+  it("allows empty remote payload when server did not advertise a preview (real delete-all)", async () => {
+    const props = buildProps();
+    const persisted = [{ id: "e1", isDeleted: false }];
+    props.lastPersistedElementsRef.current = persisted;
+    props.latestElementsRef.current = persisted;
+    props.currentDrawingVersionRef.current = 1;
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [],
+      appState: {},
+      files: {},
+      version: 4,
+      // no preview — legitimate wipe by remote user
+    });
+    renderHook(() => useEditorCollaboration(props));
+    emitServerUpdate();
+    await act(async () => {
+      vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+    });
+    await vi.waitFor(() => {
+      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
+    });
+  });
+
+  // BUG-13: malformed socket payload must not crash.
+  it("ignores a malformed element-update payload (elements: null)", () => {
+    const props = buildProps();
+    renderHook(() => useEditorCollaboration(props));
+    const handler = socketHandlers.get("element-update");
+    expect(handler).toBeDefined();
+    // These would each throw under the old destructure-only handler.
+    expect(() => handler!(null)).not.toThrow();
+    expect(() => handler!(undefined)).not.toThrow();
+    expect(() => handler!({ elements: null })).not.toThrow();
+    expect(() => handler!({ elements: "not-an-array" })).not.toThrow();
+    expect(() => handler!({ elements: [{ /* no id */ }] })).not.toThrow();
+    expect(() => handler!({ files: [] })).not.toThrow();
+    expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
+  });
+
+  // BUG-9: fetchAndMergeServerUpdate must bail on unmount rather than
+  // touching stale refs.
+  it("bails out of an in-flight fetch when the hook unmounts", async () => {
+    // Never-resolves-until-abort so we can observe unmount behaviour.
+    let resolveFetch: ((data: any) => void) | null = null;
+    getDrawingImpl = async () =>
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      });
+    const props = buildProps();
+    const { unmount } = renderHook(() => useEditorCollaboration(props));
+    emitServerUpdate();
+    await act(async () => {
+      vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+    });
+    await vi.waitFor(() => expect(getDrawingSpy).toHaveBeenCalled());
+    // Unmount MID-flight.
+    unmount();
+    // Now let the fetch resolve. The continuation past the await must
+    // observe the unmount flag and skip everything — no updateScene, no
+    // toast, no ref writes.
+    resolveFetch!({
+      id: "d1",
+      elements: [{ id: "e1", isDeleted: false }],
+      appState: {},
+      files: {},
+      version: 99,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
+    expect(toastSuccess).not.toHaveBeenCalled();
+    // Baseline refs untouched.
+    expect(props.currentDrawingVersionRef.current).toBe(1);
+  });
+
+  it("exposes the escalation delay as a sane, testable constant", () => {
+    // Guards against accidental 0 / undefined that would flash Variant C
+    // immediately on every sync.
+    expect(REMOTE_SYNC_ESCALATE_MS).toBeGreaterThan(100);
+    expect(REMOTE_SYNC_ESCALATE_MS).toBeLessThan(2_000);
   });
 
   it("skips update when server version matches known version", async () => {

@@ -7,6 +7,7 @@ import type { UserIdentity } from "../../utils/identity";
 import {
   buildRemoteSceneUpdate,
   getPersistedAppState,
+  hasRenderableElements,
   haveSameElements,
 } from "./shared";
 
@@ -38,6 +39,51 @@ type UseEditorCollaborationInput = {
  */
 export const SERVER_UPDATE_DEBOUNCE_MS = 500;
 
+/**
+ * Hard timeout (ms) on the /drawings/:id fetch fired from the collab loop.
+ * If backend hangs or the network stalls, we abort the request, dismiss the
+ * sync pill, and log — better than a pill stuck spinning forever. See BUG-15.
+ */
+export const REMOTE_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * When `isRemoteSyncing` has been true for this long without the apply
+ * landing, the UI escalates from the quiet bottom-right pill (Variant B)
+ * to the centred backdrop overlay (Variant C). Meant to signal "this is
+ * taking a moment, hold on".
+ */
+export const REMOTE_SYNC_ESCALATE_MS = 400;
+
+/**
+ * Ratio of incoming diff (elements added + removed) to the pre-apply
+ * element count that triggers an immediate escalation to Variant C, even
+ * before the 400ms delay elapses. A big diff means the canvas is about to
+ * be visually replaced — worth the stronger cue.
+ */
+export const REMOTE_SYNC_ESCALATE_DIFF_RATIO = 0.3;
+
+const computeElementDiffRatio = (
+  before: readonly any[],
+  after: readonly any[],
+): number => {
+  const beforeIds = new Set<string>();
+  for (const el of before) {
+    if (el && typeof el.id === "string") beforeIds.add(el.id);
+  }
+  const afterIds = new Set<string>();
+  for (const el of after) {
+    if (el && typeof el.id === "string") afterIds.add(el.id);
+  }
+  let added = 0;
+  for (const id of afterIds) if (!beforeIds.has(id)) added++;
+  let removed = 0;
+  for (const id of beforeIds) if (!afterIds.has(id)) removed++;
+  // Normalise against the LARGER side so a full replace of a 10-element
+  // scene with a 10-element scene (0 overlap) reads as ratio 1.0, not 2.0.
+  const denom = Math.max(beforeIds.size, afterIds.size, 1);
+  return (added + removed) / denom;
+};
+
 const getSocketUrl = () =>
   import.meta.env.VITE_API_URL === "/api"
     ? window.location.origin
@@ -66,6 +112,7 @@ export const useEditorCollaboration = ({
   const socketMeRef = useRef<UserIdentity>(socketMe);
   const [peers, setPeers] = useState<Peer[]>([]);
   const [isRemoteSyncing, setIsRemoteSyncing] = useState(false);
+  const [isRemoteSyncEscalated, setIsRemoteSyncEscalated] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const lastPresenceUsersRef = useRef<Peer[] | null>(null);
   const lastCursorEmit = useRef<number>(0);
@@ -82,6 +129,14 @@ export const useEditorCollaboration = ({
   );
   const serverUpdateFetchInFlightRef = useRef(false);
   const serverUpdatePendingRef = useRef(false);
+  // BUG-9: on cleanup we flip this ref, and every async continuation past
+  // an `await` inside `fetchAndMergeServerUpdate` checks it. Prevents a
+  // fetch that started before unmount from calling setState / touching
+  // refs owned by the next mount.
+  const isUnmountingRef = useRef(false);
+  // Timer that flips the pill into Variant C after REMOTE_SYNC_ESCALATE_MS
+  // of "still syncing". Cleared as soon as the sync completes (or unmounts).
+  const escalateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setSocketMe(me);
@@ -93,6 +148,10 @@ export const useEditorCollaboration = ({
 
   useEffect(() => {
     if (!drawingId || !isReady) return;
+    // Reset the unmount flag on every (re-)mount. This is important because
+    // useRef persists across mounts in strict-mode double-invocation and
+    // during id-driven remounts triggered by the parent's `key={id}`.
+    isUnmountingRef.current = false;
     const socket = io(getSocketUrl(), {
       path: "/socket.io",
       transports: ["websocket", "polling"],
@@ -279,37 +338,37 @@ export const useEditorCollaboration = ({
       remoteFlushScheduledRef.current = true;
       remoteFlushRafIdRef.current = requestAnimationFrame(flushRemoteUpdates);
     };
-    socket.on(
-      "element-update",
-      ({
-        elements,
-        files,
-        elementOrder,
-      }: {
-        elements: any[];
-        files?: Record<string, any>;
-        elementOrder?: string[];
-      }) => {
-        if (Array.isArray(elements)) {
-          for (const el of elements) {
-            const id = el?.id;
-            if (typeof id === "string" && id.length > 0) {
-              pendingRemoteElementsRef.current.set(id, el);
-            }
+    // BUG-13: harden against malformed socket payloads. The server-side
+    // emit is trusted today, but a stray broadcast from a compromised /
+    // buggy peer must NOT crash the editor. Guard the top-level payload
+    // shape first, THEN the individual field types. Previously the outer
+    // destructure could throw if payload was null.
+    socket.on("element-update", (payload: unknown) => {
+      if (!payload || typeof payload !== "object") return;
+      const { elements, files, elementOrder } = payload as {
+        elements?: unknown;
+        files?: unknown;
+        elementOrder?: unknown;
+      };
+      if (Array.isArray(elements)) {
+        for (const el of elements) {
+          const id = (el as { id?: unknown } | null | undefined)?.id;
+          if (typeof id === "string" && id.length > 0) {
+            pendingRemoteElementsRef.current.set(id, el);
           }
         }
-        if (files && typeof files === "object") {
-          pendingRemoteFilesRef.current = {
-            ...pendingRemoteFilesRef.current,
-            ...files,
-          };
-        }
-        if (Array.isArray(elementOrder) && elementOrder.length > 0) {
-          pendingRemoteElementOrderRef.current = elementOrder;
-        }
-        scheduleRemoteFlush();
-      },
-    );
+      }
+      if (files && typeof files === "object" && !Array.isArray(files)) {
+        pendingRemoteFilesRef.current = {
+          ...pendingRemoteFilesRef.current,
+          ...(files as Record<string, any>),
+        };
+      }
+      if (Array.isArray(elementOrder) && elementOrder.length > 0) {
+        pendingRemoteElementOrderRef.current = elementOrder as string[];
+      }
+      scheduleRemoteFlush();
+    });
     // A remote-driven `updateScene({ elements })` mid-drag was crashing the
     // editor: Excalidraw's internal `pointerDownState` holds identity refs
     // into the pre-swap elements array (the element being dragged / resized
@@ -363,16 +422,69 @@ export const useEditorCollaboration = ({
         };
         tick();
       });
+    // Turn the sync pill ON and schedule the Variant C escalation timer.
+    // Two triggers escalate B → C:
+    //   1. Wall-clock delay: if the sync has been visible for
+    //      REMOTE_SYNC_ESCALATE_MS without unlocking, promote automatically.
+    //   2. Diff-size: computed at apply time (see below), promotes
+    //      immediately if the incoming payload rewrites >30% of the scene.
+    const beginRemoteSyncUI = () => {
+      if (isUnmountingRef.current) return;
+      setIsRemoteSyncing(true);
+      if (escalateTimerRef.current) {
+        clearTimeout(escalateTimerRef.current);
+      }
+      escalateTimerRef.current = setTimeout(() => {
+        escalateTimerRef.current = null;
+        if (isUnmountingRef.current) return;
+        setIsRemoteSyncEscalated(true);
+      }, REMOTE_SYNC_ESCALATE_MS);
+    };
+    const escalateRemoteSyncUI = () => {
+      if (isUnmountingRef.current) return;
+      if (escalateTimerRef.current) {
+        clearTimeout(escalateTimerRef.current);
+        escalateTimerRef.current = null;
+      }
+      setIsRemoteSyncEscalated(true);
+    };
+    const endRemoteSyncUI = () => {
+      if (escalateTimerRef.current) {
+        clearTimeout(escalateTimerRef.current);
+        escalateTimerRef.current = null;
+      }
+      // Note: setState after unmount is a silent no-op in React 18, but
+      // we still guard for symmetry with beginRemoteSyncUI and so
+      // future refs / effects added here don't leak.
+      if (isUnmountingRef.current) return;
+      setIsRemoteSyncing(false);
+      setIsRemoteSyncEscalated(false);
+    };
     const fetchAndMergeServerUpdate = async () => {
       if (!drawingId) return;
+      if (isUnmountingRef.current) return;
       if (serverUpdateFetchInFlightRef.current) {
         // Coalesce: mark pending and let the in-flight fetch handle it after.
         serverUpdatePendingRef.current = true;
         return;
       }
       serverUpdateFetchInFlightRef.current = true;
+      // BUG-15: hard cap the fetch. AbortController fires after
+      // REMOTE_FETCH_TIMEOUT_MS, causing axios to reject with a
+      // CanceledError. We catch it below and dismiss the pill instead
+      // of leaving it stuck.
+      const abortController = new AbortController();
+      const timeoutId = setTimeout(() => {
+        abortController.abort();
+      }, REMOTE_FETCH_TIMEOUT_MS);
       try {
-        const data = await api.getDrawing(drawingId);
+        const data = await api.getDrawing(drawingId, {
+          signal: abortController.signal,
+        });
+        // BUG-9: bail out cleanly if we were unmounted while the fetch
+        // was in flight. Every mutation past this point touches refs
+        // that now belong to the next mount (or to nothing).
+        if (isUnmountingRef.current) return;
         const responseVersion =
           typeof data.version === "number" ? data.version : null;
         const knownVersion = currentDrawingVersionRef.current;
@@ -399,6 +511,7 @@ export const useEditorCollaboration = ({
         // core of the crash fix — see `isUserGestureActive` above.
         if (isUserGestureActive()) {
           await waitForGestureEnd();
+          if (isUnmountingRef.current) return;
           // The gesture may have committed local edits (onChange fires on
           // pointer up). Re-check so we don't overwrite them.
           if (hasLocalPendingEdits()) {
@@ -409,13 +522,37 @@ export const useEditorCollaboration = ({
         const elements = Array.isArray(data.elements) ? data.elements : [];
         const files =
           data.files && typeof data.files === "object" ? data.files : {};
+        // BUG-14: mirror the suspiciousBlankLoad guard from the scene
+        // loader. If the backend transiently returns an empty payload
+        // (mid-migration, a lost broadcast, or an actual bug) while our
+        // local scene still has renderable content AND the server tells
+        // us it has a preview, refuse to clobber. The next legitimate
+        // update will re-fetch and land normally.
+        const incomingRenderable = hasRenderableElements(elements);
+        const localRenderable = hasRenderableElements(
+          latestElementsRef.current,
+        );
+        const hasServerPreview =
+          typeof data.preview === "string" && data.preview.trim().length > 0;
+        if (!incomingRenderable && localRenderable && hasServerPreview) {
+          console.warn(
+            "[Editor] Ignored suspicious blank remote payload — local scene has content and server advertised a preview",
+            { drawingId, responseVersion },
+          );
+          return;
+        }
         const persistedAppState = getPersistedAppState(data.appState || {});
         const excalApi = excalidrawAPI.current;
-        // Lock the UI: an overlay renders in EditorView while this is true so
-        // the user gets "同步中…" feedback instead of a silent freeze. The
-        // whole apply is one microtask window; the overlay is visible for
-        // the tiny slice between setState and finally.
-        setIsRemoteSyncing(true);
+        // Show the sync pill. If the incoming diff is big, jump straight
+        // to Variant C — don't wait 400ms for the escalation timer.
+        beginRemoteSyncUI();
+        const diffRatio = computeElementDiffRatio(
+          latestElementsRef.current,
+          elements,
+        );
+        if (diffRatio > REMOTE_SYNC_ESCALATE_DIFF_RATIO) {
+          escalateRemoteSyncUI();
+        }
         if (excalApi && typeof excalApi.updateScene === "function") {
           isSyncing.current = true;
           try {
@@ -445,11 +582,28 @@ export const useEditorCollaboration = ({
         elements.forEach((el: any) => recordElementVersion(el));
         toast.success("已從 Server 同步最新內容");
       } catch (err) {
-        console.warn("[Editor] Failed to fetch server-side drawing update", err);
+        // BUG-15: distinguish the abort we caused from a real network error.
+        const isAbort =
+          (err as { name?: string } | null | undefined)?.name ===
+            "CanceledError" ||
+          (err as { name?: string } | null | undefined)?.name === "AbortError";
+        if (isAbort) {
+          console.warn(
+            "[Editor] Remote update fetch aborted after " +
+              REMOTE_FETCH_TIMEOUT_MS +
+              "ms — dismissing sync pill",
+          );
+        } else {
+          console.warn(
+            "[Editor] Failed to fetch server-side drawing update",
+            err,
+          );
+        }
       } finally {
+        clearTimeout(timeoutId);
         serverUpdateFetchInFlightRef.current = false;
-        setIsRemoteSyncing(false);
-        if (serverUpdatePendingRef.current) {
+        endRemoteSyncUI();
+        if (serverUpdatePendingRef.current && !isUnmountingRef.current) {
           serverUpdatePendingRef.current = false;
           // Re-run once more to pick up anything that arrived while we fetched.
           void fetchAndMergeServerUpdate();
@@ -479,6 +633,10 @@ export const useEditorCollaboration = ({
     document.addEventListener("mouseenter", onMouseEnter);
     document.addEventListener("mouseleave", onMouseLeave);
     return () => {
+      // BUG-9: any in-flight fetchAndMergeServerUpdate reads this ref
+      // after each `await`. Flip it FIRST so continuations bail early
+      // instead of touching the (now-stale) refs.
+      isUnmountingRef.current = true;
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("blur", onBlur);
       document.removeEventListener("mouseenter", onMouseEnter);
@@ -502,6 +660,10 @@ export const useEditorCollaboration = ({
       if (serverUpdateTimerRef.current) {
         clearTimeout(serverUpdateTimerRef.current);
         serverUpdateTimerRef.current = null;
+      }
+      if (escalateTimerRef.current) {
+        clearTimeout(escalateTimerRef.current);
+        escalateTimerRef.current = null;
       }
       serverUpdatePendingRef.current = false;
       cancelAnimationFrame(animationFrameId.current);
@@ -549,6 +711,7 @@ export const useEditorCollaboration = ({
     socketRef,
     isSyncing,
     isRemoteSyncing,
+    isRemoteSyncEscalated,
     onPointerUpdate,
   };
 };

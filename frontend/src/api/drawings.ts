@@ -119,8 +119,13 @@ export async function getSharedDrawings(
   return { ...response.data, drawings: response.data.drawings.map(deserializeDrawingSummary) };
 }
 
-export const getDrawing = async (id: string) => {
-  const response = await api.get<Drawing>(`/drawings/${id}`);
+export const getDrawing = async (
+  id: string,
+  options?: { signal?: AbortSignal },
+) => {
+  const response = await api.get<Drawing>(`/drawings/${id}`, {
+    signal: options?.signal,
+  });
   return deserializeDrawing(response.data);
 };
 
