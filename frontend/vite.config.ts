@@ -17,6 +17,10 @@ try {
 
 const appVersion = process.env.VITE_APP_VERSION?.trim() || versionFromFile;
 const buildLabel = process.env.VITE_APP_BUILD_LABEL?.trim() || "local development build";
+const buildHash =
+  process.env.VITE_BUILD_HASH?.trim() ||
+  process.env.ZEABUR_GIT_COMMIT_SHA?.trim() ||
+  "dev";
 
 export default defineConfig(({ command }) => {
   const nodeEnv = process.env.NODE_ENV || (command === "build" ? "production" : "development");
@@ -32,6 +36,7 @@ export default defineConfig(({ command }) => {
       ...processEnvDefines,
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
       'import.meta.env.VITE_APP_BUILD_LABEL': JSON.stringify(buildLabel),
+      __BUILD_HASH__: JSON.stringify(buildHash),
     },
     optimizeDeps: {
       esbuildOptions: {
