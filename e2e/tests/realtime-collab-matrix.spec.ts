@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import {
   createDrawing,
   deleteDrawing,
+  getDrawing,
   updateDrawing,
 } from "./helpers/api";
 
@@ -172,38 +173,51 @@ function notImplemented(what: string) {
 type RemoteSource = {
   id: string;
   label: string;
+  // F5 (Round 3): drivers now read the CURRENT drawing before firing so the
+  // PUT's `version` matches whatever the backend has. Hard-coding version=2
+  // against a freshly-created v1 drawing produced 409 VERSION_CONFLICT and
+  // was the root cause of 15/15 A-matrix failures in Round 2 QA. The `fire`
+  // signature dropped the `version` parameter — helper reads it internally.
   fire: (
     request: import("@playwright/test").APIRequestContext,
     drawingId: string,
     remoteElementId: string,
-    version: number,
-  ) => Promise<void>;
+  ) => Promise<{ remoteIds: string[] }>;
 };
 
+// F2 (Round 3): R1 now has genuine append semantics — GET the current
+// elements, append the new one, PUT the whole array. R2 stays replace-all
+// (throws away current elements entirely). Backend has no atomic patch
+// endpoint (see backend/src/routes/dashboard/drawingCreateUpdateRoutes.ts),
+// so append is emulated on the client. This matches how the MCP server
+// itself implements append via a read-modify-write cycle.
 const remoteSources: RemoteSource[] = [
   {
     id: "R1",
     label: "mcp patch (append)",
-    fire: async (request, drawingId, remoteElementId, version) => {
-      // PUT /drawings/:id with the new element appended. The backend
-      // broadcasts drawing-server-update to the room.
+    fire: async (request, drawingId, remoteElementId) => {
+      const current = await getDrawing(request, drawingId);
+      const existing = Array.isArray(current.elements) ? current.elements : [];
+      const newElement = REMOTE_ELEMENT_TEMPLATE(remoteElementId);
       await updateDrawing(request, drawingId, {
-        elements: [REMOTE_ELEMENT_TEMPLATE(remoteElementId)],
-        version,
+        elements: [...existing, newElement],
+        version: current.version,
       } as any);
+      return { remoteIds: [remoteElementId] };
     },
   },
   {
     id: "R2",
     label: "mcp update (replace all)",
-    fire: async (request, drawingId, remoteElementId, version) => {
+    fire: async (request, drawingId, remoteElementId) => {
+      const current = await getDrawing(request, drawingId);
+      const primary = REMOTE_ELEMENT_TEMPLATE(remoteElementId);
+      const secondary = REMOTE_ELEMENT_TEMPLATE(`${remoteElementId}-b`);
       await updateDrawing(request, drawingId, {
-        elements: [
-          REMOTE_ELEMENT_TEMPLATE(remoteElementId),
-          REMOTE_ELEMENT_TEMPLATE(`${remoteElementId}-b`),
-        ],
-        version,
+        elements: [primary, secondary],
+        version: current.version,
       } as any);
+      return { remoteIds: [remoteElementId, `${remoteElementId}-b`] };
     },
   },
   {
@@ -221,6 +235,27 @@ const remoteSources: RemoteSource[] = [
     },
   },
 ];
+
+/**
+ * F3 (Round 3): after every A-matrix apply, we want to prove BOTH survived —
+ * the local gesture's committed element AND the remote's newly-added elements.
+ * The dev-only `window.__EXCALIDASH_EXCALIDRAW_API__` is exposed by
+ * `Editor.tsx` in `import.meta.env.DEV`, which is exactly the mode Playwright
+ * hits (`npm run dev`).
+ */
+const getSceneElementIds = async (page: Page): Promise<string[]> => {
+  return await page.evaluate(() => {
+    const api = (window as any).__EXCALIDASH_EXCALIDRAW_API__;
+    if (!api || typeof api.getSceneElements !== "function") return [];
+    const elements = api.getSceneElements() as Array<{
+      id: string;
+      isDeleted?: boolean;
+    }>;
+    return elements
+      .filter((el) => el && el.id && !el.isDeleted)
+      .map((el) => el.id);
+  });
+};
 
 // Row-by-row matrix. Each row is a describe(gesture) → test(remote) pair.
 // We intentionally use `test.skip` for rows whose gesture/remote driver
@@ -271,28 +306,59 @@ test.describe("A. Gesture × Remote (30 rows)", () => {
           // 1. Start the gesture and hold it.
           await gesture.drive(page, box);
 
-          // 2. Fire the remote update.
-          const remoteId = `remote-${rowId}-${Date.now()}`;
-          await source.fire(request, drawing.id, remoteId, 2);
+          // 2. Snapshot which local ids exist BEFORE the remote fires so
+          //    the post-apply check knows what "the local gesture's element"
+          //    is (F3). Some gestures (like G10 pan) may not produce a new
+          //    element — that's fine, the assertion below tolerates an
+          //    empty localIdsBefore.
+          const localIdsBefore = await getSceneElementIds(page);
 
-          // 3. The pill should light up.
+          // 3. Fire the remote update. F5: driver reads current version
+          //    internally, so no more hard-coded `2` producing 409.
+          const remoteId = `remote-${rowId}-${Date.now()}`;
+          const { remoteIds } = await source.fire(
+            request,
+            drawing.id,
+            remoteId,
+          );
+
+          // 4. The pill should light up. It's driven on the leading edge
+          //    of the drawing-server-update burst (see collab hook), so
+          //    the aria-busy=true state is stable through the debounce +
+          //    fetch window.
           await page.waitForSelector(
             `[data-testid="${SYNC_PILL_TESTID}"][aria-busy="true"]`,
             { timeout: 5_000 },
           );
 
-          // 4. Release the gesture. Because we can't guarantee where the
+          // 5. Release the gesture. Because we can't guarantee where the
           //    mouse ends for every gesture flavour, we do a generic mouse-up
           //    + keyboard clear.
           await page.mouse.up();
           await page.keyboard.press("Escape");
           await page.waitForTimeout(300);
 
-          // 5. Pill should dismiss.
+          // 6. Pill should dismiss.
           await page.waitForSelector(
             `[data-testid="${SYNC_PILL_TESTID}"][aria-busy="false"]`,
             { timeout: 5_000 },
           );
+
+          // 7. F3: Designer spec §1.A criterion 6 — after apply, the scene
+          //    must contain BOTH the remote element(s) AND the pre-existing
+          //    local element(s). If the apply silently discarded the local
+          //    gesture (regression), we catch it here.
+          const idsAfter = await getSceneElementIds(page);
+          for (const rid of remoteIds) {
+            expect(idsAfter, `remote id ${rid} missing after apply`).toContain(
+              rid,
+            );
+          }
+          for (const lid of localIdsBefore) {
+            expect(idsAfter, `local id ${lid} discarded on apply`).toContain(
+              lid,
+            );
+          }
 
           expect(pageerrors).toHaveLength(0);
         } finally {
@@ -330,7 +396,7 @@ test.describe("B. Broadcast reach (6 rows)", () => {
       await waitForCanvas(p1);
       await waitForCanvas(p2);
       const remoteId = `B1-${Date.now()}`;
-      await remoteSources[0].fire(request, drawing.id, remoteId, 2);
+      await remoteSources[0].fire(request, drawing.id, remoteId);
       await Promise.all([
         p1.waitForSelector(`[data-testid="${SYNC_PILL_TESTID}"]`, { timeout: 5_000 }),
         p2.waitForSelector(`[data-testid="${SYNC_PILL_TESTID}"]`, { timeout: 5_000 }),
@@ -478,7 +544,7 @@ test.describe("F. Extreme cases (8 rows)", () => {
       await route.abort();
     });
     // Fire a remote update to trigger the collab hook fetch.
-    await remoteSources[0].fire(request, drawing.id, `F4-${Date.now()}`, 2);
+    await remoteSources[0].fire(request, drawing.id, `F4-${Date.now()}`);
     // Pill lights up.
     await page.waitForSelector(
       `[data-testid="${SYNC_PILL_TESTID}"][aria-busy="true"]`,

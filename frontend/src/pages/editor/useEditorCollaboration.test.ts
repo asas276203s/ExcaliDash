@@ -55,6 +55,7 @@ import {
   SERVER_UPDATE_DEBOUNCE_MS,
   REMOTE_FETCH_TIMEOUT_MS,
   REMOTE_SYNC_ESCALATE_MS,
+  MAX_CONSECUTIVE_REMOTE_TIMEOUTS,
 } from "./useEditorCollaboration";
 
 const makeRef = <T>(value: T): MutableRefObject<T> => ({ current: value });
@@ -438,16 +439,21 @@ describe("useEditorCollaboration drawing-server-update", () => {
     }
   });
 
-  // BUG-14: mirror the suspiciousBlankLoad guard from the scene loader.
-  // If backend transiently returns an empty payload while the local
-  // scene is non-empty and the server itself advertises a preview, treat
-  // it as suspicious and DO NOT clobber.
-  it("refuses to clobber a non-empty local scene with an empty remote payload when server advertises a preview", async () => {
+  // BUG-14 (F1 refined): mirror the suspiciousBlankLoad guard from the scene
+  // loader. If backend transiently returns an empty payload while the local
+  // scene is non-empty and the server itself advertises a preview AND the
+  // version did NOT bump, treat it as suspicious and DO NOT clobber. The
+  // version-did-not-bump signal is what tells us this is a transient echo
+  // and not an intentional user save.
+  it("refuses to clobber a non-empty local scene with an empty remote payload when server advertises a preview AND version did not bump", async () => {
     const props = buildProps();
     const persisted = [{ id: "e1", isDeleted: false }];
     props.lastPersistedElementsRef.current = persisted;
     props.latestElementsRef.current = persisted;
-    props.currentDrawingVersionRef.current = 1;
+    // Known local version is HIGHER than the response version → guard trips
+    // because responseVersion !== knownVersion (skips the equal-early-return)
+    // but also responseVersion < knownVersion (versionDidBump = false).
+    props.currentDrawingVersionRef.current = 5;
     getDrawingImpl = async () => ({
       id: "d1",
       elements: [],
@@ -479,6 +485,38 @@ describe("useEditorCollaboration drawing-server-update", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  // F1 (Round 3): a legitimate MCP delete-all bumps the server version. If
+  // the response reports a strictly greater version than we know locally,
+  // treat the empty payload as an intentional write and apply — even if
+  // the preview is still present (server hasn't regenerated it yet).
+  it("APPLIES an empty remote payload when the server version bumped past the known local version (legitimate delete-all)", async () => {
+    const props = buildProps();
+    const persisted = [{ id: "e1", isDeleted: false }];
+    props.lastPersistedElementsRef.current = persisted;
+    props.latestElementsRef.current = persisted;
+    props.currentDrawingVersionRef.current = 1;
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [],
+      appState: {},
+      files: {},
+      version: 4, // strictly greater → intentional write
+      preview: "data:image/svg+xml;base64,abc",
+    });
+    renderHook(() => useEditorCollaboration(props));
+    emitServerUpdate();
+    await act(async () => {
+      vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+    });
+    await vi.waitFor(() => {
+      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
+    });
+    // Baseline refs updated so subsequent saves target the new version.
+    expect(props.currentDrawingVersionRef.current).toBe(4);
+    expect(props.latestElementsRef.current).toEqual([]);
+    expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
   });
 
   it("allows empty remote payload when local scene is also empty (fresh drawing)", async () => {
@@ -578,6 +616,123 @@ describe("useEditorCollaboration drawing-server-update", () => {
     expect(toastSuccess).not.toHaveBeenCalled();
     // Baseline refs untouched.
     expect(props.currentDrawingVersionRef.current).toBe(1);
+  });
+
+  // F4: after MAX_CONSECUTIVE_REMOTE_TIMEOUTS timeouts in a row, further
+  // socket-driven fetch attempts are short-circuited so a dead backend can't
+  // keep the sync loop grinding. The next successful fetch (or socket
+  // reconnect) resets the counter and normal service resumes.
+  it("stops firing fetchAndMerge after MAX_CONSECUTIVE_REMOTE_TIMEOUTS in a row (F4)", async () => {
+    getDrawingImpl = async (_id: string, opts?: any) =>
+      new Promise((_resolve, reject) => {
+        opts.signal?.addEventListener("abort", () => {
+          const err: any = new Error("aborted");
+          err.name = "CanceledError";
+          reject(err);
+        });
+      });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const props = buildProps();
+      renderHook(() => useEditorCollaboration(props));
+      // Trigger MAX consecutive timeouts. Each iteration: emit event →
+      // wait for debounce → fetch fires → wait for timeout → catch → finally.
+      for (let i = 0; i < MAX_CONSECUTIVE_REMOTE_TIMEOUTS; i++) {
+        emitServerUpdate();
+        await act(async () => {
+          vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+        });
+        await vi.waitFor(() => {
+          expect(getDrawingSpy).toHaveBeenCalledTimes(i + 1);
+        });
+        await act(async () => {
+          vi.advanceTimersByTime(REMOTE_FETCH_TIMEOUT_MS + 50);
+        });
+        // Let the catch/finally chain settle.
+        await Promise.resolve();
+        await Promise.resolve();
+      }
+      const callsAfterMax = getDrawingSpy.mock.calls.length;
+      expect(callsAfterMax).toBe(MAX_CONSECUTIVE_REMOTE_TIMEOUTS);
+      // Now emit a fresh event — the counter is at MAX so the fetch is
+      // short-circuited before it hits the API.
+      emitServerUpdate();
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS + 50);
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(getDrawingSpy.mock.calls.length).toBe(callsAfterMax);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("resets the timeout counter on socket reconnect so sync resumes (F4)", async () => {
+    // Timeout on the first N-1 attempts, then a socket reconnect resets the
+    // counter, and the next successful fetch lands cleanly.
+    let shouldTimeout = true;
+    getDrawingImpl = async (_id: string, opts?: any) =>
+      shouldTimeout
+        ? new Promise((_resolve, reject) => {
+            opts.signal?.addEventListener("abort", () => {
+              const err: any = new Error("aborted");
+              err.name = "CanceledError";
+              reject(err);
+            });
+          })
+        : Promise.resolve({
+            id: "d1",
+            elements: [{ id: "e1" }],
+            appState: {},
+            files: {},
+            version: 2,
+          });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const props = buildProps();
+      renderHook(() => useEditorCollaboration(props));
+      // Exhaust the counter to MAX.
+      for (let i = 0; i < MAX_CONSECUTIVE_REMOTE_TIMEOUTS; i++) {
+        emitServerUpdate();
+        await act(async () => {
+          vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+        });
+        await vi.waitFor(() => {
+          expect(getDrawingSpy).toHaveBeenCalledTimes(i + 1);
+        });
+        await act(async () => {
+          vi.advanceTimersByTime(REMOTE_FETCH_TIMEOUT_MS + 50);
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+      }
+      // Confirm: further events don't fetch.
+      emitServerUpdate();
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS + 50);
+      });
+      expect(getDrawingSpy.mock.calls.length).toBe(
+        MAX_CONSECUTIVE_REMOTE_TIMEOUTS,
+      );
+      // Now fire the socket "connect" handler → counter resets to 0.
+      const connectHandler = socketHandlers.get("connect");
+      expect(connectHandler).toBeDefined();
+      act(() => {
+        connectHandler!();
+      });
+      // Also flip the mock to succeed so we exit the timeout regime.
+      shouldTimeout = false;
+      emitServerUpdate();
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+      });
+      await vi.waitFor(() => {
+        expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it("exposes the escalation delay as a sane, testable constant", () => {

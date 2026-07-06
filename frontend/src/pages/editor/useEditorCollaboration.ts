@@ -47,6 +47,14 @@ export const SERVER_UPDATE_DEBOUNCE_MS = 500;
 export const REMOTE_FETCH_TIMEOUT_MS = 10_000;
 
 /**
+ * F4 (Round 3): if the backend is genuinely dead we don't want the pending-
+ * event chain to loop forever, each iteration eating REMOTE_FETCH_TIMEOUT_MS.
+ * After this many consecutive timeouts we stop re-running until the next
+ * successful fetch resets the counter. See BUG-15 tail.
+ */
+export const MAX_CONSECUTIVE_REMOTE_TIMEOUTS = 3;
+
+/**
  * When `isRemoteSyncing` has been true for this long without the apply
  * landing, the UI escalates from the quiet bottom-right pill (Variant B)
  * to the centred backdrop overlay (Variant C). Meant to signal "this is
@@ -129,6 +137,10 @@ export const useEditorCollaboration = ({
   );
   const serverUpdateFetchInFlightRef = useRef(false);
   const serverUpdatePendingRef = useRef(false);
+  // F4: bail out of the pending-event re-run chain after too many consecutive
+  // timeouts so a hung backend can't keep the sync loop running forever. Reset
+  // to 0 on any successful fetch (response landed, even if we skipped the apply).
+  const consecutiveRemoteTimeoutsRef = useRef(0);
   // BUG-9: on cleanup we flip this ref, and every async continuation past
   // an `await` inside `fetchAndMergeServerUpdate` checks it. Prevents a
   // fetch that started before unmount from calling setState / touching
@@ -200,6 +212,10 @@ export const useEditorCollaboration = ({
       if (import.meta.env.DEV) {
         (window as any).__EXCALIDASH_SOCKET_STATUS__ = { connected: true };
       }
+      // F4: reset the consecutive-timeout give-up counter on every fresh
+      // connect. A reconnect is our strongest signal that the client can
+      // reach the server again; give sync a clean slate.
+      consecutiveRemoteTimeoutsRef.current = 0;
       socket.emit("join-room", { drawingId, user: me }, handleJoinAck);
     });
     // In tests the mock socket reports connected: true synchronously; in
@@ -463,12 +479,29 @@ export const useEditorCollaboration = ({
     const fetchAndMergeServerUpdate = async () => {
       if (!drawingId) return;
       if (isUnmountingRef.current) return;
+      // F4: once we've given up on the server, skip fresh attempts too. The
+      // socket-connect handler resets the counter so a genuine reconnect gets
+      // a clean slate. Falling through here means we never mount a pill for
+      // a request that we won't actually service.
+      if (
+        consecutiveRemoteTimeoutsRef.current >=
+        MAX_CONSECUTIVE_REMOTE_TIMEOUTS
+      ) {
+        return;
+      }
       if (serverUpdateFetchInFlightRef.current) {
         // Coalesce: mark pending and let the in-flight fetch handle it after.
         serverUpdatePendingRef.current = true;
         return;
       }
       serverUpdateFetchInFlightRef.current = true;
+      // F4/F3 (Round 3): light the sync pill IMMEDIATELY when we commit to a
+      // fetch, not after the response lands. Previously beginRemoteSyncUI
+      // was called post-fetch, which meant a stalled backend never showed
+      // any feedback (the pill was invisible for the full 10s abort
+      // window). Now the pill goes on now, and the catch/finally chain
+      // dismisses it whether the fetch succeeds, times out, or errors.
+      beginRemoteSyncUI();
       // BUG-15: hard cap the fetch. AbortController fires after
       // REMOTE_FETCH_TIMEOUT_MS, causing axios to reject with a
       // CanceledError. We catch it below and dismiss the pill instead
@@ -481,6 +514,11 @@ export const useEditorCollaboration = ({
         const data = await api.getDrawing(drawingId, {
           signal: abortController.signal,
         });
+        // F4: a response landed → server is alive → reset the consecutive-
+        // timeout counter. Doing this BEFORE the unmount bail-out so a
+        // late-arriving success still clears the counter (harmless — the
+        // ref writes below are guarded by isUnmountingRef).
+        consecutiveRemoteTimeoutsRef.current = 0;
         // BUG-9: bail out cleanly if we were unmounted while the fetch
         // was in flight. Every mutation past this point touches refs
         // that now belong to the next mount (or to nothing).
@@ -501,51 +539,68 @@ export const useEditorCollaboration = ({
             lastPersistedElementsRef.current,
             latestElementsRef.current,
           );
-        if (hasLocalPendingEdits()) {
-          // Safe strategy: do not clobber unsaved local edits. The user's next
-          // save hits the backend's version-conflict path, which is authoritative.
-          toast.info("Server 有更新、請先儲存你的改動");
-          return;
-        }
         // Hold the apply until the user's gesture completes. This is the
-        // core of the crash fix — see `isUserGestureActive` above.
+        // core of the crash fix — see `isUserGestureActive` above. Doing
+        // this BEFORE the pending-edits check because pending edits from
+        // the just-ending gesture will auto-save shortly, and the apply +
+        // 409-auto-merge handles the collision cleanly (see Designer
+        // spec §1.A criterion 3: "Remote update applies AFTER pointerup").
         if (isUserGestureActive()) {
           await waitForGestureEnd();
           if (isUnmountingRef.current) return;
-          // The gesture may have committed local edits (onChange fires on
-          // pointer up). Re-check so we don't overwrite them.
-          if (hasLocalPendingEdits()) {
-            toast.info("Server 有更新、請先儲存你的改動");
-            return;
-          }
+          // Note: we intentionally do NOT re-check hasLocalPendingEdits()
+          // after the gesture ends. Those pending edits are from THIS
+          // gesture, and the next autosave will hit the version-conflict
+          // auto-merge path (see commit 0896f88). Blocking the apply here
+          // would break the test-matrix "both survive" acceptance.
+        } else if (hasLocalPendingEdits()) {
+          // No active gesture but pending edits — user has stale unsaved
+          // work from before. Refuse to clobber; wait for their save.
+          toast.info("Server 有更新、請先儲存你的改動");
+          return;
         }
         const elements = Array.isArray(data.elements) ? data.elements : [];
         const files =
           data.files && typeof data.files === "object" ? data.files : {};
-        // BUG-14: mirror the suspiciousBlankLoad guard from the scene
-        // loader. If the backend transiently returns an empty payload
-        // (mid-migration, a lost broadcast, or an actual bug) while our
-        // local scene still has renderable content AND the server tells
-        // us it has a preview, refuse to clobber. The next legitimate
-        // update will re-fetch and land normally.
+        // BUG-14 (refined by F1 Round 3): mirror the suspiciousBlankLoad
+        // guard from the scene loader. If the backend transiently returns
+        // an empty payload (mid-migration, a lost broadcast, or an actual
+        // bug) while our local scene still has renderable content AND the
+        // server tells us it has a preview, refuse to clobber.
+        //
+        // HOWEVER, a legitimate MCP delete-all also produces this shape
+        // (empty elements, preview from before the delete not yet nulled).
+        // Distinguish the two by version bump: if `responseVersion` is
+        // strictly greater than `knownVersion`, the server has clearly
+        // recorded an intentional write — apply it. Only skip if version
+        // did NOT bump (transient corruption or same-version echo).
         const incomingRenderable = hasRenderableElements(elements);
         const localRenderable = hasRenderableElements(
           latestElementsRef.current,
         );
         const hasServerPreview =
           typeof data.preview === "string" && data.preview.trim().length > 0;
-        if (!incomingRenderable && localRenderable && hasServerPreview) {
+        const versionDidBump =
+          responseVersion !== null &&
+          knownVersion !== null &&
+          responseVersion > knownVersion;
+        if (
+          !incomingRenderable &&
+          localRenderable &&
+          hasServerPreview &&
+          !versionDidBump
+        ) {
           console.warn(
-            "[Editor] Ignored suspicious blank remote payload — local scene has content and server advertised a preview",
-            { drawingId, responseVersion },
+            "[Editor] Ignored suspicious blank remote payload — local scene has content, server advertised a preview, and version did not bump",
+            { drawingId, responseVersion, knownVersion },
           );
           return;
         }
         const persistedAppState = getPersistedAppState(data.appState || {});
         const excalApi = excalidrawAPI.current;
-        // Show the sync pill. If the incoming diff is big, jump straight
-        // to Variant C — don't wait 400ms for the escalation timer.
-        beginRemoteSyncUI();
+        // Pill is already visible (lit at the top of fetchAndMerge). If the
+        // incoming diff is big, jump straight to Variant C — don't wait
+        // 400ms for the escalation timer.
         const diffRatio = computeElementDiffRatio(
           latestElementsRef.current,
           elements,
@@ -588,10 +643,15 @@ export const useEditorCollaboration = ({
             "CanceledError" ||
           (err as { name?: string } | null | undefined)?.name === "AbortError";
         if (isAbort) {
+          // F4: track consecutive timeouts so we can stop re-running when
+          // the backend is genuinely dead.
+          consecutiveRemoteTimeoutsRef.current += 1;
           console.warn(
             "[Editor] Remote update fetch aborted after " +
               REMOTE_FETCH_TIMEOUT_MS +
-              "ms — dismissing sync pill",
+              "ms — dismissing sync pill (consecutive timeouts: " +
+              consecutiveRemoteTimeoutsRef.current +
+              ")",
           );
         } else {
           console.warn(
@@ -603,7 +663,27 @@ export const useEditorCollaboration = ({
         clearTimeout(timeoutId);
         serverUpdateFetchInFlightRef.current = false;
         endRemoteSyncUI();
-        if (serverUpdatePendingRef.current && !isUnmountingRef.current) {
+        // F4: gate the pending re-run on the consecutive-timeout counter.
+        // If we've hit MAX_CONSECUTIVE_REMOTE_TIMEOUTS in a row, the
+        // backend is very likely dead; drop the pending flag and stop.
+        // The next successful fetch (or new event flow that resets the
+        // counter) will restart the chain.
+        if (
+          consecutiveRemoteTimeoutsRef.current >=
+          MAX_CONSECUTIVE_REMOTE_TIMEOUTS
+        ) {
+          if (serverUpdatePendingRef.current) {
+            console.warn(
+              "[Editor] Giving up on server sync after " +
+                MAX_CONSECUTIVE_REMOTE_TIMEOUTS +
+                " consecutive timeouts — server unreachable",
+            );
+          }
+          serverUpdatePendingRef.current = false;
+        } else if (
+          serverUpdatePendingRef.current &&
+          !isUnmountingRef.current
+        ) {
           serverUpdatePendingRef.current = false;
           // Re-run once more to pick up anything that arrived while we fetched.
           void fetchAndMergeServerUpdate();
@@ -612,6 +692,18 @@ export const useEditorCollaboration = ({
     };
     socket.on("drawing-server-update", (payload: { drawingId?: string }) => {
       if (!payload?.drawingId || payload.drawingId !== drawingId) return;
+      // F4/F3 (Round 3): light the pill on the leading edge of the burst,
+      // not once the debounced fetch starts. The persistence layer's
+      // 409-auto-merge (see 0896f88) can finish an entire apply cycle
+      // before our 500ms debounce fires, and if we only light the pill
+      // at fetch time we'd have no user-visible feedback for the actual
+      // sync window. Dismiss happens in the fetch's finally block.
+      if (
+        !serverUpdateTimerRef.current &&
+        !serverUpdateFetchInFlightRef.current
+      ) {
+        beginRemoteSyncUI();
+      }
       // Debounce: collapse a burst of events into one fetch after 500ms of quiet.
       if (serverUpdateTimerRef.current) {
         clearTimeout(serverUpdateTimerRef.current);
