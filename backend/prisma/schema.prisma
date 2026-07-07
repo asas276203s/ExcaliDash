@@ -224,6 +224,49 @@ model AuthIdentity {
   @@index([userId])
 }
 
+/// Observability: batched client-side diagnostic ring-buffer flushes and
+/// server-side structured logs. Both tables are append-only telemetry with
+/// bounded retention (see backend/src/diagnostics/store.ts). No drawing
+/// element payloads are ever stored here — only counts, ids and event types.
+model DiagnosticReport {
+  id         String   @id @default(uuid())
+  source     String   @default("client") // "client" | "server"
+  sessionId  String?
+  drawingId  String?
+  appVersion String?
+  userId     String?
+  userAgent  String?
+  entries    String   // JSON array of ring-buffer entries
+  entryCount Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([source, createdAt])
+  @@index([sessionId])
+  @@index([drawingId])
+}
+
+model ServerLog {
+  id         String   @id @default(uuid())
+  level      String   @default("info") // "info" | "warn" | "error"
+  type       String   // "request" | "error" | "socket" | "drawing-save" | ...
+  sessionId  String?
+  drawingId  String?
+  requestId  String?
+  route      String?
+  method     String?
+  status     Int?
+  durationMs Int?
+  message    String?
+  payload    String?  // JSON blob
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([type, createdAt])
+  @@index([sessionId])
+  @@index([drawingId])
+}
+
 /// Per-(drawing, fileId) S3 object record. Excalidraw fileIds are content
 /// hashes that legitimately repeat across drawings, so the primary key
 /// includes drawingId to keep each reference accounted for separately.

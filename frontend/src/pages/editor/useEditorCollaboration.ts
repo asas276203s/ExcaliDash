@@ -3,6 +3,7 @@ import type { MutableRefObject, RefObject } from "react";
 import { io, type Socket } from "socket.io-client";
 import { toast } from "sonner";
 import * as api from "../../api";
+import { diagnostics } from "../../lib/diagnostics";
 import type { UserIdentity } from "../../utils/identity";
 import { mergeElements } from "../../utils/element-merge";
 import {
@@ -192,6 +193,9 @@ export const useEditorCollaboration = ({
       path: "/socket.io",
       transports: ["websocket", "polling"],
       withCredentials: true,
+      // Correlation: let the server tie its socket logs to this client's
+      // diagnostics trace.
+      auth: { sessionId: diagnostics.getSessionId() },
     });
     socketRef.current = socket;
     if (import.meta.env.DEV) {
@@ -217,6 +221,7 @@ export const useEditorCollaboration = ({
       };
       socketMeRef.current = next;
       setSocketMe(next);
+      diagnostics.log("socket-join-ack", { drawingId, userId: next.id });
       const lastUsers = lastPresenceUsersRef.current;
       if (lastUsers) {
         setPeers(lastUsers.filter((u) => u.id !== next.id));
@@ -233,6 +238,7 @@ export const useEditorCollaboration = ({
     // join-room is idempotent (users filtered by id + socket.join no-op on
     // repeat), so a duplicate emit at first connect is harmless.
     socket.on("connect", () => {
+      diagnostics.log("socket-connect", { drawingId, socketId: socket.id });
       if (import.meta.env.DEV) {
         (window as any).__EXCALIDASH_SOCKET_STATUS__ = { connected: true };
       }
@@ -241,6 +247,13 @@ export const useEditorCollaboration = ({
       // reach the server again; give sync a clean slate.
       consecutiveRemoteTimeoutsRef.current = 0;
       socket.emit("join-room", { drawingId, user: me }, handleJoinAck);
+    });
+    socket.on("disconnect", (reason: any) => {
+      diagnostics.log(
+        "socket-disconnect",
+        { drawingId, reason: typeof reason === "string" ? reason : String(reason) },
+        "warn",
+      );
     });
     // In tests the mock socket reports connected: true synchronously; in
     // production socket.connected is false until the first real connect
@@ -519,6 +532,10 @@ export const useEditorCollaboration = ({
         return;
       }
       serverUpdateFetchInFlightRef.current = true;
+      diagnostics.log("fetch-merge-start", {
+        drawingId,
+        knownVersion: currentDrawingVersionRef.current,
+      });
       // F4/F3 (Round 3): light the sync pill IMMEDIATELY when we commit to a
       // fetch, not after the response lands. Previously beginRemoteSyncUI
       // was called post-fetch, which meant a stalled backend never showed
@@ -550,6 +567,16 @@ export const useEditorCollaboration = ({
         const responseVersion =
           typeof data.version === "number" ? data.version : null;
         const knownVersion = currentDrawingVersionRef.current;
+        diagnostics.log("fetch-merge-resolved", {
+          drawingId,
+          serverVersion: responseVersion,
+          knownVersion,
+          serverElements: Array.isArray(data.elements)
+            ? data.elements.length
+            : 0,
+          hasPreview:
+            typeof data.preview === "string" && data.preview.trim().length > 0,
+        });
         // No new server version to merge — skip.
         if (
           responseVersion !== null &&
@@ -570,7 +597,9 @@ export const useEditorCollaboration = ({
         // 409-auto-merge handles the collision cleanly (see Designer
         // spec §1.A criterion 3: "Remote update applies AFTER pointerup").
         if (isUserGestureActive()) {
+          diagnostics.log("fetch-merge-gesture-wait-start", { drawingId });
           await waitForGestureEnd();
+          diagnostics.log("fetch-merge-gesture-wait-end", { drawingId });
           if (isUnmountingRef.current) return;
           // Note: we intentionally do NOT re-check hasLocalPendingEdits()
           // after the gesture ends. Those pending edits are from THIS
@@ -614,6 +643,11 @@ export const useEditorCollaboration = ({
           hasServerPreview &&
           !versionDidBump
         ) {
+          diagnostics.log(
+            "fetch-merge-blank-guard-hit",
+            { drawingId, responseVersion, knownVersion },
+            "warn",
+          );
           console.warn(
             "[Editor] Ignored suspicious blank remote payload — local scene has content, server advertised a preview, and version did not bump",
             { drawingId, responseVersion, knownVersion },
@@ -647,6 +681,25 @@ export const useEditorCollaboration = ({
             ? excalApi.getSceneElementsIncludingDeleted()
             : latestElementsRef.current;
         const mergedElements = mergeElements(localSceneForMerge, elements);
+        diagnostics.log("fetch-merge-applied", {
+          drawingId,
+          localBefore: Array.isArray(localSceneForMerge)
+            ? localSceneForMerge.length
+            : 0,
+          serverCount: elements.length,
+          mergedCount: mergedElements.length,
+          incomingRenderable,
+          localRenderable,
+          versionDidBump,
+          excalApiPresent: Boolean(excalApi),
+        });
+        if (!excalApi || typeof excalApi.updateScene !== "function") {
+          diagnostics.log(
+            "fetch-merge-no-api",
+            { drawingId, excalApiPresent: Boolean(excalApi) },
+            "error",
+          );
+        }
         // Pill is already visible (lit at the top of fetchAndMerge). If the
         // incoming diff is big, jump straight to Variant C — don't wait
         // 400ms for the escalation timer.
@@ -764,6 +817,12 @@ export const useEditorCollaboration = ({
       const lastSelfSaveAt = lastSelfSavedAtRef.current;
       const withinSelfEchoWindow =
         lastSelfSaveAt > 0 && now - lastSelfSaveAt < SELF_ECHO_WINDOW_MS;
+      diagnostics.log("server-update-received", {
+        drawingId,
+        pendingEchoes,
+        withinSelfEchoWindow,
+        selfEcho: pendingEchoes > 0 && withinSelfEchoWindow,
+      });
       if (pendingEchoes > 0 && withinSelfEchoWindow) {
         pendingSelfEchoCountRef.current = pendingEchoes - 1;
         // Skip both pill and debounced fetch — there is nothing new to

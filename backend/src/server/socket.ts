@@ -10,6 +10,19 @@ import {
   canViewDrawing,
   type DrawingPrincipal,
 } from "../authz/sharing";
+import { recordServerLog } from "../diagnostics/store";
+
+/** Pull the correlation session id the SPA passes in the socket handshake. */
+const getHandshakeSessionId = (socket: {
+  handshake: { auth?: Record<string, unknown>; query?: Record<string, unknown> };
+}): string | null => {
+  const fromAuth = socket.handshake.auth?.sessionId;
+  const fromQuery = socket.handshake.query?.sessionId;
+  const raw = typeof fromAuth === "string" ? fromAuth : fromQuery;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().slice(0, 200);
+  return trimmed.length > 0 ? trimmed : null;
+};
 
 interface User {
   id: string;
@@ -121,6 +134,17 @@ export const registerSocketHandlers = ({
 
   io.on("connection", (socket) => {
     const principal = socketPrincipalMap.get(socket.id) || null;
+    const sessionId = getHandshakeSessionId(socket);
+    void recordServerLog({
+      type: "socket",
+      sessionId,
+      message: "connection",
+      payload: {
+        socketId: socket.id,
+        principalKind: principal?.kind ?? "anonymous",
+        transport: socket.conn?.transport?.name ?? null,
+      },
+    });
     const authorizedDrawingAccess = new Map<
       string,
       { access: "view" | "edit" | "owner"; checkedAtMs: number }
@@ -206,6 +230,19 @@ export const registerSocketHandlers = ({
           roomUsers.set(roomId, filteredUsers);
 
           io.to(roomId).emit("presence-update", filteredUsers);
+          void recordServerLog({
+            type: "socket",
+            sessionId,
+            drawingId,
+            message: "join-room",
+            payload: {
+              socketId: socket.id,
+              userId: newUser.id,
+              access,
+              roomSize: io.sockets.adapter.rooms.get(roomId)?.size ?? 0,
+              presenceCount: filteredUsers.length,
+            },
+          });
           // Let the client know what the server will use as its canonical presence identity.
           if (typeof ack === "function") {
             ack({
@@ -278,7 +315,13 @@ export const registerSocketHandlers = ({
       }
     );
 
-    socket.on("disconnect", () => {
+    socket.on("disconnect", (reason) => {
+      void recordServerLog({
+        type: "socket",
+        sessionId,
+        message: "disconnect",
+        payload: { socketId: socket.id, reason },
+      });
       socketPrincipalMap.delete(socket.id);
       roomUsers.forEach((users, roomId) => {
         const index = users.findIndex((u) => u.socketId === socket.id);

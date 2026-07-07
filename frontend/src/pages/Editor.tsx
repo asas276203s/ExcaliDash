@@ -20,6 +20,10 @@ import { useEditorCommands } from "./editor/useEditorCommands";
 import { useEditorElementTracking } from "./editor/useEditorElementTracking";
 import { useEditorBroadcast } from "./editor/useEditorBroadcast";
 import { useEditorTabs } from "./editor/useEditorTabs";
+import { useBlankCanvasWatchdog } from "./editor/useBlankCanvasWatchdog";
+import { EditorErrorBoundary } from "../components/EditorErrorBoundary";
+import { DiagnosticsReportButton } from "../components/DiagnosticsReportButton";
+import { diagnostics } from "../lib/diagnostics";
 
 /**
  * Route-facing wrapper that forces a full remount whenever the drawing id
@@ -38,7 +42,15 @@ import { useEditorTabs } from "./editor/useEditorTabs";
  */
 export const Editor: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  return <EditorInner key={id ?? "no-drawing-id"} />;
+  const key = id ?? "no-drawing-id";
+  // The error boundary is keyed alongside EditorInner so navigating to a
+  // different drawing recovers from a crashed one instead of staying stuck on
+  // the fallback UI.
+  return (
+    <EditorErrorBoundary key={key}>
+      <EditorInner key={key} />
+    </EditorErrorBoundary>
+  );
 };
 
 const EditorInner: React.FC = () => {
@@ -126,6 +138,15 @@ const EditorInner: React.FC = () => {
       isUnmounting.current = true;
     };
   }, []);
+  // Bug tracker: keep the diagnostics logger pointed at the current drawing so
+  // every buffered entry carries the right drawingId.
+  useEffect(() => {
+    diagnostics.setDrawingId(id ?? null);
+    diagnostics.log("editor-mounted", { drawingId: id ?? null });
+    return () => {
+      diagnostics.log("editor-unmounted", { drawingId: id ?? null });
+    };
+  }, [id]);
   const handleSocketAccessDenied = useCallback(() => {
     if (!id || !location.pathname.startsWith("/editor/")) return;
     navigate(`/shared/${id}${location.search}${location.hash}`, {
@@ -379,6 +400,12 @@ const EditorInner: React.FC = () => {
   });
 
   const { tabs, activeId: activeTabId, openTab, closeTab, activateTab, reopenLastClosed, moveTab, hasClosedHistory } = useEditorTabs({ drawingId: id, drawingName });
+  useBlankCanvasWatchdog({
+    excalidrawAPI,
+    latestElementsRef,
+    drawingId: id,
+    isReady,
+  });
   return (
     <>
       <EditorView
@@ -436,6 +463,7 @@ const EditorInner: React.FC = () => {
         onCloseHistory={() => setIsHistoryOpen(false)}
         onCloseShare={() => setIsShareOpen(false)}
       />
+      <DiagnosticsReportButton />
     </>
   );
 };

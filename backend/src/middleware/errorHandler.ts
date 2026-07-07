@@ -4,6 +4,7 @@
  */
 import { Request, Response, NextFunction } from "express";
 import { config } from "../config";
+import { getSessionIdFromHeaders, recordServerLog } from "../diagnostics/store";
 
 export interface AppError extends Error {
   statusCode?: number;
@@ -30,6 +31,21 @@ export const errorHandler = (
     path: req.path,
     method: req.method,
     timestamp: new Date().toISOString(),
+  });
+
+  // Bug tracker: persist the full stack so an operator can correlate a
+  // client-reported failure with the exact server-side error. Best-effort —
+  // recordServerLog never throws.
+  void recordServerLog({
+    level: statusCode >= 500 ? "error" : "warn",
+    type: "error",
+    sessionId: getSessionIdFromHeaders(req.headers),
+    requestId: (req.headers["x-request-id"] as string | undefined) ?? null,
+    route: `${req.method} ${req.path}`,
+    method: req.method,
+    status: statusCode,
+    message: err.message,
+    payload: { stack: err.stack ?? null, name: err.name },
   });
 
   if (!isDevelopment) {

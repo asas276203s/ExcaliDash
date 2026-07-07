@@ -4,6 +4,7 @@ import { exportToSvg } from "@excalidraw/excalidraw";
 import debounce from "lodash/debounce";
 import { toast } from "sonner";
 import * as api from "../../api";
+import { diagnostics } from "../../lib/diagnostics";
 import { compressExcalidrawFiles } from "../../utils/imageCompression";
 import {
   DrawingSaveConflictError,
@@ -166,11 +167,24 @@ export const useEditorPersistence = ({
         filesForAttempt: Record<string, any>,
       ): Promise<void> => {
         try {
+          diagnostics.log("save-start", {
+            drawingId,
+            attempt,
+            elementCount: elementsForAttempt.length,
+            versionIn: refs.currentDrawingVersion.current ?? null,
+            filesFlag,
+          });
           const updated = await api.updateDrawing(drawingId, {
             elements: elementsForAttempt,
             appState: persistableAppState,
             ...(filesFlag ? { files: filesForAttempt } : {}),
             version: refs.currentDrawingVersion.current ?? undefined,
+          });
+          diagnostics.log("save-ok", {
+            drawingId,
+            attempt,
+            versionOut:
+              typeof updated.version === "number" ? updated.version : null,
           });
           if (typeof updated.version === "number") {
             refs.currentDrawingVersion.current = updated.version;
@@ -192,11 +206,23 @@ export const useEditorPersistence = ({
           if (!api.isAxiosError(err) || err.response?.status !== 409) {
             throw err;
           }
+          diagnostics.log(
+            "save-conflict-409",
+            {
+              drawingId,
+              attempt,
+              serverVersion:
+                (err.response?.data as { currentVersion?: number } | undefined)
+                  ?.currentVersion ?? null,
+            },
+            "warn",
+          );
           if (attempt > 0) {
             // Already merged and retried once — a second 409 means yet another
             // writer landed between our fetch and our retry. Surface it.
             throw new DrawingSaveConflictError();
           }
+          diagnostics.log("save-merge-retry", { drawingId, attempt });
           const { merged, mergedFiles, nextFilesFlag } =
             await resolveVersionConflict({
               drawingId,
@@ -217,9 +243,19 @@ export const useEditorPersistence = ({
       );
     } catch (err) {
       if (err instanceof DrawingSaveConflictError) {
+        diagnostics.log("save-conflict-unresolved", { drawingId }, "error");
         toast.error("另一分頁已修改此圖、請重新載入以取得最新版本");
         throw err;
       }
+      diagnostics.log(
+        "save-failed",
+        {
+          drawingId,
+          message: err instanceof Error ? err.message : String(err),
+          status: api.isAxiosError(err) ? err.response?.status ?? null : null,
+        },
+        "error",
+      );
       console.error("Failed to save drawing", err);
       toast.error("儲存失敗");
       throw err;

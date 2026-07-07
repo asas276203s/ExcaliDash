@@ -3,6 +3,7 @@ import type { NavigateFunction } from "react-router-dom";
 import type { MutableRefObject } from "react";
 import { toast } from "sonner";
 import * as api from "../../api";
+import { diagnostics } from "../../lib/diagnostics";
 import { getPersistedAppState, hasRenderableElements } from "./shared";
 
 type AccessLevel = "none" | "view" | "edit" | "owner";
@@ -113,6 +114,7 @@ export const useEditorSceneLoader = ({
         setIsSceneLoading(false);
         return;
       }
+      diagnostics.log("scene-load-start", { drawingId: id, loadToken });
       try {
         const libraryItemsPromise = user
           ? api.getLibrary().catch((err) => {
@@ -127,6 +129,11 @@ export const useEditorSceneLoader = ({
         if (!isCurrentLoad()) {
           // A newer load superseded us — do not touch state or refs, they
           // now belong to the newer drawing id.
+          diagnostics.log("scene-load-abort", {
+            drawingId: id,
+            reason: "superseded",
+            loadToken,
+          });
           return;
         }
         setDrawingName(data.name);
@@ -144,6 +151,14 @@ export const useEditorSceneLoader = ({
         const loadedRenderable = hasRenderableElements(elements);
         refs.suspiciousBlankLoad.current = !loadedRenderable && hasPreview;
         refs.hasSceneChangesSinceLoad.current = false;
+        diagnostics.log("scene-load-done", {
+          drawingId: id,
+          elementCount: elements.length,
+          loadedRenderable,
+          hasPreview,
+          version: typeof data.version === "number" ? data.version : null,
+          suspiciousBlankLoad: refs.suspiciousBlankLoad.current,
+        });
         if (import.meta.env.DEV) {
           console.log("[Editor] Loaded drawing", {
             drawingId: id,
@@ -182,6 +197,15 @@ export const useEditorSceneLoader = ({
           // any user-facing signalling for its own drawing id.
           return;
         }
+        diagnostics.log(
+          "scene-load-error",
+          {
+            drawingId: id,
+            message: err instanceof Error ? err.message : String(err),
+            status: api.isAxiosError(err) ? err.response?.status ?? null : null,
+          },
+          "error",
+        );
         console.error("Failed to load drawing", err);
         let message = "Failed to load drawing";
         if (api.isAxiosError(err)) {

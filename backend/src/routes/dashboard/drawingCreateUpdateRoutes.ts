@@ -9,6 +9,10 @@ import {
 import { autoShareDrawing } from "../../autoShare";
 import { rewritePreviewForS3 } from "../../fileProcessing";
 import {
+  getSessionIdFromHeaders,
+  recordServerLog,
+} from "../../diagnostics/store";
+import {
   getUserTrashCollectionId,
   isTrashCollectionId,
   toInternalTrashCollectionId,
@@ -45,7 +49,18 @@ export const registerDrawingCreateUpdateRoutes = (
   // update would silently sit on the server and the next user save would
   // overwrite it based on stale state.
   const notifyServerStateChange = (drawingId: string): void => {
-    io.to(`drawing_${drawingId}`).emit("drawing-server-update", { drawingId });
+    const roomId = `drawing_${drawingId}`;
+    const roomSize = io.sockets.adapter.rooms.get(roomId)?.size ?? 0;
+    io.to(roomId).emit("drawing-server-update", { drawingId });
+    // Room size is load-bearing for blank-canvas debugging: a broadcast that
+    // fans out to 0 sockets (or the wrong room) means open editors never
+    // learn about the write.
+    void recordServerLog({
+      type: "socket-broadcast",
+      drawingId,
+      message: "drawing-server-update",
+      payload: { roomSize },
+    });
   };
   app.post(
     "/drawings",
@@ -209,7 +224,27 @@ export const registerDrawingCreateUpdateRoutes = (
         payload.appState !== undefined ||
         payload.files !== undefined;
 
+      const diagSessionId = getSessionIdFromHeaders(req.headers);
+      const incomingElementCount = Array.isArray(payload.elements)
+        ? payload.elements.length
+        : null;
+
       if (isSceneUpdate && payload.version !== undefined && payload.version !== existingDrawing.version) {
+        void recordServerLog({
+          level: "warn",
+          type: "drawing-save",
+          sessionId: diagSessionId,
+          drawingId: id,
+          route: `PUT /drawings/${id}`,
+          method: "PUT",
+          status: 409,
+          message: "version conflict (pre-check)",
+          payload: {
+            versionIn: payload.version,
+            serverVersion: existingDrawing.version,
+            elementsIn: incomingElementCount,
+          },
+        });
         return res.status(409).json({
           error: "Conflict",
           code: "VERSION_CONFLICT",
@@ -320,6 +355,21 @@ export const registerDrawingCreateUpdateRoutes = (
             select: { version: true },
           });
           if (isSceneUpdate && payload.version !== undefined) {
+            void recordServerLog({
+              level: "warn",
+              type: "drawing-save",
+              sessionId: diagSessionId,
+              drawingId: id,
+              route: `PUT /drawings/${id}`,
+              method: "PUT",
+              status: 409,
+              message: "version conflict (race on write)",
+              payload: {
+                versionIn: payload.version,
+                serverVersion: latestDrawing?.version ?? null,
+                elementsIn: incomingElementCount,
+              },
+            });
             return res.status(409).json({
               error: "Conflict",
               code: "VERSION_CONFLICT",
@@ -341,6 +391,20 @@ export const registerDrawingCreateUpdateRoutes = (
       // in place without a full page reload, so bursts of MCP updates
       // no longer spam the user.
       if (isSceneUpdate) {
+        void recordServerLog({
+          type: "drawing-save",
+          sessionId: diagSessionId,
+          drawingId: id,
+          route: `PUT /drawings/${id}`,
+          method: "PUT",
+          status: 200,
+          message: "scene saved",
+          payload: {
+            versionIn: payload.version ?? null,
+            versionOut: updatedDrawing.version,
+            elementsIn: incomingElementCount,
+          },
+        });
         notifyServerStateChange(id);
       }
 
