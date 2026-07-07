@@ -4,6 +4,7 @@ import { io, type Socket } from "socket.io-client";
 import { toast } from "sonner";
 import * as api from "../../api";
 import type { UserIdentity } from "../../utils/identity";
+import { mergeElements } from "../../utils/element-merge";
 import {
   buildRemoteSceneUpdate,
   getPersistedAppState,
@@ -621,12 +622,37 @@ export const useEditorCollaboration = ({
         }
         const persistedAppState = getPersistedAppState(data.appState || {});
         const excalApi = excalidrawAPI.current;
+        // BUG-18: merge the server payload with Excalidraw's *current* scene
+        // state rather than blindly replacing it. Two motivating scenarios:
+        //   1. Broadcast lands while the user is mid-draw. Excalidraw's
+        //      scene holds an in-progress element that hasn't been persisted
+        //      or even flushed to latestElementsRef yet. A full replace
+        //      clobbers it, and the subsequent handleCanvasChange resets
+        //      the debounced-save args to the truncated state, silently
+        //      losing the work.
+        //   2. Peer or MCP tool sends an empty payload (patch_drawing with
+        //      delete-all). Version bumped, so the suspiciousBlankLoad
+        //      guard doesn't fire. Replacing with `[]` would blank the
+        //      canvas even when the local user still had valid unsaved
+        //      work — the "有時候更新之後 canvas 白屏" symptom users hit.
+        // Using the same reconcileElements-based merge the 409 auto-merge
+        // uses in resolveVersionConflict keeps the two paths symmetric:
+        // higher-version elements win, so a peer's Ctrl+A + Delete
+        // (elements marked isDeleted with bumped versions) still wipes the
+        // canvas, but a bare MCP-style delete-all is treated as "the
+        // element the client is still holding is authoritative until the
+        // client saves it".
+        const localSceneForMerge =
+          excalApi && typeof excalApi.getSceneElementsIncludingDeleted === "function"
+            ? excalApi.getSceneElementsIncludingDeleted()
+            : latestElementsRef.current;
+        const mergedElements = mergeElements(localSceneForMerge, elements);
         // Pill is already visible (lit at the top of fetchAndMerge). If the
         // incoming diff is big, jump straight to Variant C — don't wait
         // 400ms for the escalation timer.
         const diffRatio = computeElementDiffRatio(
           latestElementsRef.current,
-          elements,
+          mergedElements,
         );
         if (diffRatio > REMOTE_SYNC_ESCALATE_DIFF_RATIO) {
           escalateRemoteSyncUI();
@@ -635,7 +661,7 @@ export const useEditorCollaboration = ({
           isSyncing.current = true;
           try {
             excalApi.updateScene({
-              elements,
+              elements: mergedElements,
               appState: persistedAppState,
               captureUpdate: "NEVER",
             });
@@ -647,8 +673,13 @@ export const useEditorCollaboration = ({
             isSyncing.current = false;
           }
         }
-        // Sync all baseline refs so subsequent local saves target the new version.
-        latestElementsRef.current = elements;
+        // Sync baseline refs. latestElementsRef mirrors what's on the canvas
+        // (the merge result) so subsequent handleCanvasChange doesn't down-
+        // grade it. lastPersistedElementsRef reflects what the SERVER
+        // actually has (raw fetched elements) — the drift between the two
+        // is what the next debouncedSave detects and reconciles via the
+        // 409 auto-merge path.
+        latestElementsRef.current = mergedElements;
         latestFilesRef.current = files;
         lastSyncedFilesRef.current = files;
         lastPersistedFilesRef.current = files;
@@ -656,8 +687,9 @@ export const useEditorCollaboration = ({
         if (responseVersion !== null) {
           currentDrawingVersionRef.current = responseVersion;
         }
-        lastSyncedElementOrderSigRef.current = computeElementOrderSig(elements);
-        elements.forEach((el: any) => recordElementVersion(el));
+        lastSyncedElementOrderSigRef.current =
+          computeElementOrderSig(mergedElements);
+        mergedElements.forEach((el: any) => recordElementVersion(el));
         toast.success("已從 Server 同步最新內容");
       } catch (err) {
         // BUG-15: distinguish the abort we caused from a real network error.

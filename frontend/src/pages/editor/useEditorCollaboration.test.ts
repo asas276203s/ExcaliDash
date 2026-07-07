@@ -324,6 +324,138 @@ describe("useEditorCollaboration drawing-server-update", () => {
     expect(typeof lastJoinCall?.[2]).toBe("function");
   });
 
+  // BUG-18: after waitForGestureEnd, applying server's elements as a full
+  // REPLACE clobbers any local unsaved elements Excalidraw is holding (in-
+  // progress element the user was drawing when the broadcast arrived). The
+  // apply then triggers a handleCanvasChange with the server-only scene,
+  // which resets the debounced-save args to the truncated state, silently
+  // losing the user's work. When the server payload is empty (peer clear or
+  // MCP delete-all), this manifests as canvas going blank mid-draw. The fix
+  // is to MERGE the incoming server elements with Excalidraw's current
+  // scene state (same reconciliation the 409 auto-merge uses in
+  // resolveVersionConflict), so local unsaved edits survive the apply.
+  it("MERGES server elements with local Excalidraw scene so mid-draw unsaved work survives (BUG-18)", async () => {
+    const props = buildProps();
+    const persisted = [
+      { id: "x", version: 1, versionNonce: 1, updated: 1 },
+    ];
+    props.lastPersistedElementsRef.current = persisted;
+    props.latestElementsRef.current = persisted;
+    props.currentDrawingVersionRef.current = 1;
+    // Simulate Excalidraw's scene containing an in-progress element Z the
+    // user is currently drawing — not yet in latestElementsRef because we
+    // haven't yielded to the onChange handler between mouse move and the
+    // broadcast landing. Version 3 > server's implicit 0 so reconcile keeps it.
+    const zLocal = {
+      id: "z",
+      version: 3,
+      versionNonce: 42,
+      updated: 500,
+      isDeleted: false,
+    };
+    props.excalidrawAPI.current.getSceneElementsIncludingDeleted = vi.fn(() => [
+      persisted[0],
+      zLocal,
+    ]);
+    // Server-fetched state: X (unchanged) + peer's Y. No Z — peer doesn't
+    // know about it because our client hasn't autosaved yet.
+    const yPeer = {
+      id: "y",
+      version: 1,
+      versionNonce: 50,
+      updated: 50,
+      isDeleted: false,
+    };
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [persisted[0], yPeer],
+      appState: {},
+      files: {},
+      version: 4,
+    });
+    renderHook(() => useEditorCollaboration(props));
+    emitServerUpdate();
+    await act(async () => {
+      vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+    });
+    const updateScene = props.excalidrawAPI.current.updateScene as ReturnType<
+      typeof vi.fn
+    >;
+    await vi.waitFor(() => {
+      expect(updateScene).toHaveBeenCalled();
+    });
+    const payload = updateScene.mock.calls[0][0];
+    // Merged scene: x + y (peer) + z (local unsaved).
+    const gotIds = (payload.elements as any[])
+      .map((e: any) => e.id)
+      .sort();
+    expect(gotIds).toEqual(["x", "y", "z"]);
+    // latestElementsRef captures the merged result so a subsequent
+    // handleCanvasChange -> broadcastChanges -> debouncedSave doesn't
+    // silently lose Z on the next autosave tick.
+    const trackedIds = (props.latestElementsRef.current as any[])
+      .map((e: any) => e.id)
+      .sort();
+    expect(trackedIds).toEqual(["x", "y", "z"]);
+    // Server's authoritative baseline still reflects what server sent so
+    // the next save can detect drift and trigger the 409 auto-merge.
+    const persistedIds = (props.lastPersistedElementsRef.current as any[])
+      .map((e: any) => e.id)
+      .sort();
+    expect(persistedIds).toEqual(["x", "y"]);
+    expect(props.currentDrawingVersionRef.current).toBe(4);
+  });
+
+  // BUG-18 companion: the reported user symptom. Peer/MCP delete-all fires,
+  // server has empty elements, version bumped. User was drawing Z locally.
+  // Before the fix: canvas replaced with [] → blank. After the fix: merge
+  // preserves Z, canvas shows just Z (peer's delete of others survives).
+  it("keeps local unsaved element when server returns empty AND version bumped (BUG-18 blank-canvas repro)", async () => {
+    const props = buildProps();
+    props.lastPersistedElementsRef.current = [];
+    props.latestElementsRef.current = [];
+    props.currentDrawingVersionRef.current = 1;
+    const zLocal = {
+      id: "z",
+      version: 2,
+      versionNonce: 7,
+      updated: 200,
+      isDeleted: false,
+    };
+    props.excalidrawAPI.current.getSceneElementsIncludingDeleted = vi.fn(
+      () => [zLocal],
+    );
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [],
+      appState: {},
+      files: {},
+      version: 5,
+      // no preview — simulating an MCP full-remove that hasn't refreshed preview
+    });
+    renderHook(() => useEditorCollaboration(props));
+    emitServerUpdate();
+    await act(async () => {
+      vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+    });
+    const updateScene = props.excalidrawAPI.current.updateScene as ReturnType<
+      typeof vi.fn
+    >;
+    await vi.waitFor(() => {
+      expect(updateScene).toHaveBeenCalled();
+    });
+    const payload = updateScene.mock.calls[0][0];
+    // Local Z survives — canvas NOT blank.
+    expect(
+      (payload.elements as any[]).map((e: any) => e.id),
+    ).toEqual(["z"]);
+    // latestElementsRef still contains Z so the next debouncedSave tick
+    // won't accidentally save an empty scene.
+    expect(
+      (props.latestElementsRef.current as any[]).map((e: any) => e.id),
+    ).toEqual(["z"]);
+  });
+
   it("defers updateScene while a user gesture is active, then applies", async () => {
     // Regression guard for the MCP-mid-drag crash. When a remote update
     // arrives while the user is dragging/resizing/drawing, applying the
