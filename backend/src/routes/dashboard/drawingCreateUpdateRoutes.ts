@@ -48,10 +48,23 @@ export const registerDrawingCreateUpdateRoutes = (
   // to "drawing-server-update" and reloads; without this event an MCP
   // update would silently sit on the server and the next user save would
   // overwrite it based on stale state.
-  const notifyServerStateChange = (drawingId: string): void => {
+  //
+  // The payload carries the ORIGIN of the write (the saving session's
+  // X-Session-Id and the acting user id) so each recipient can decide,
+  // by exact match rather than a time-window heuristic, whether the echo
+  // is their own save (skip), their own other window (apply silently), or
+  // a genuine remote/MCP write (show the sync pill).
+  const notifyServerStateChange = (
+    drawingId: string,
+    origin: { originSessionId: string | null; originUserId: string | null },
+  ): void => {
     const roomId = `drawing_${drawingId}`;
     const roomSize = io.sockets.adapter.rooms.get(roomId)?.size ?? 0;
-    io.to(roomId).emit("drawing-server-update", { drawingId });
+    io.to(roomId).emit("drawing-server-update", {
+      drawingId,
+      originSessionId: origin.originSessionId,
+      originUserId: origin.originUserId,
+    });
     // Room size is load-bearing for blank-canvas debugging: a broadcast that
     // fans out to 0 sockets (or the wrong room) means open editors never
     // learn about the write.
@@ -59,7 +72,11 @@ export const registerDrawingCreateUpdateRoutes = (
       type: "socket-broadcast",
       drawingId,
       message: "drawing-server-update",
-      payload: { roomSize },
+      payload: {
+        roomSize,
+        originSessionId: origin.originSessionId,
+        originUserId: origin.originUserId,
+      },
     });
   };
   app.post(
@@ -405,7 +422,10 @@ export const registerDrawingCreateUpdateRoutes = (
             elementsIn: incomingElementCount,
           },
         });
-        notifyServerStateChange(id);
+        notifyServerStateChange(id, {
+          originSessionId: diagSessionId,
+          originUserId: principal?.userId ?? null,
+        });
       }
 
       return res.json({

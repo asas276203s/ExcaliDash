@@ -31,16 +31,16 @@ type UseEditorCollaborationInput = {
   lastPersistedFilesRef: MutableRefObject<Record<string, any>>;
   currentDrawingVersionRef: MutableRefObject<number | null>;
   /**
-   * BUG-17: bumped by the persistence layer after every successful self-save.
-   * Each successful scene save produces one backend broadcast to the drawing
-   * room; that broadcast fans out to the sender's own socket too. The
-   * `drawing-server-update` handler decrements this counter to swallow the
-   * echo — see the "self-echo suppression" branch there.
+   * This client's server-side acting user id (the id the backend stamps as
+   * `originUserId` on this client's own writes). Used to recognise a
+   * drawing-server-update that originated from the SAME user in a DIFFERENT
+   * window/tab so it can be applied silently (content changed, but it's still
+   * "me" — no sync pill). Null when unknown; the collab fetch back-fills it
+   * from the drawing GET response's `requestUserId` so auth-disabled /
+   * bootstrap-admin sessions (where the client auth context has no user) still
+   * resolve it.
    */
-  pendingSelfEchoCountRef: MutableRefObject<number>;
-  /** Wall-clock ms of the last self-save success. Paired with the counter to
-   *  guard against a stale marker from a lost/dropped broadcast. */
-  lastSelfSavedAtRef: MutableRefObject<number>;
+  myUserId: string | null;
   computeElementOrderSig: (elements: readonly any[]) => string;
   recordElementVersion: (element: any) => void;
   onAccessDenied: () => void;
@@ -82,16 +82,6 @@ export const REMOTE_SYNC_ESCALATE_MS = 400;
  * be visually replaced — worth the stronger cue.
  */
 export const REMOTE_SYNC_ESCALATE_DIFF_RATIO = 0.3;
-
-/**
- * BUG-17: TTL on the self-echo marker. A successful self-save records a
- * timestamp; if the corresponding broadcast doesn't come back within this
- * window we assume it was dropped and reset the pending counter so a
- * legitimate future peer broadcast is not silently swallowed. 3s is
- * comfortably above the 500ms socket → broadcast round-trip we measure in
- * practice while still short enough to reset before the next user save.
- */
-export const SELF_ECHO_WINDOW_MS = 3_000;
 
 const computeElementDiffRatio = (
   before: readonly any[],
@@ -135,8 +125,7 @@ export const useEditorCollaboration = ({
   lastPersistedElementsRef,
   lastPersistedFilesRef,
   currentDrawingVersionRef,
-  pendingSelfEchoCountRef,
-  lastSelfSavedAtRef,
+  myUserId,
   computeElementOrderSig,
   recordElementVersion,
   onAccessDenied,
@@ -162,6 +151,16 @@ export const useEditorCollaboration = ({
   );
   const serverUpdateFetchInFlightRef = useRef(false);
   const serverUpdatePendingRef = useRef(false);
+  // This client's server-side acting user id. Seeded from the `myUserId` prop
+  // (present when the client auth context has a user) and back-filled from the
+  // drawing GET response's `requestUserId` for auth-disabled / bootstrap-admin
+  // sessions where the prop is null. Compared against a broadcast's
+  // `originUserId` to detect a same-user-different-window echo.
+  const myUserIdRef = useRef<string | null>(myUserId ?? null);
+  // True while a coalesced burst of drawing-server-update events is entirely
+  // "silent" (same-user other window). A single genuine remote event in the
+  // burst promotes it to a visible sync (pill shown).
+  const serverUpdateSilentBurstRef = useRef(false);
   // F4: bail out of the pending-event re-run chain after too many consecutive
   // timeouts so a hung backend can't keep the sync loop running forever. Reset
   // to 0 on any successful fetch (response landed, even if we skipped the apply).
@@ -182,6 +181,12 @@ export const useEditorCollaboration = ({
   useEffect(() => {
     socketMeRef.current = socketMe;
   }, [socketMe]);
+
+  // Keep the acting-user ref in sync with the prop, but never clobber a value
+  // we already learned (from the GET response) with a null prop.
+  useEffect(() => {
+    if (myUserId) myUserIdRef.current = myUserId;
+  }, [myUserId]);
 
   useEffect(() => {
     if (!drawingId || !isReady) return;
@@ -513,7 +518,14 @@ export const useEditorCollaboration = ({
       setIsRemoteSyncing(false);
       setIsRemoteSyncEscalated(false);
     };
-    const fetchAndMergeServerUpdate = async () => {
+    const fetchAndMergeServerUpdate = async (options?: {
+      silent?: boolean;
+    }) => {
+      // `silent` = the triggering broadcast(s) came from THIS user's other
+      // window. We still fetch + merge (the content genuinely changed) but we
+      // never light the sync pill, escalate the overlay, or toast — from the
+      // user's seat it's their own edit landing.
+      const silent = options?.silent ?? false;
       if (!drawingId) return;
       if (isUnmountingRef.current) return;
       // F4: once we've given up on the server, skip fresh attempts too. The
@@ -542,7 +554,7 @@ export const useEditorCollaboration = ({
       // any feedback (the pill was invisible for the full 10s abort
       // window). Now the pill goes on now, and the catch/finally chain
       // dismisses it whether the fetch succeeds, times out, or errors.
-      beginRemoteSyncUI();
+      if (!silent) beginRemoteSyncUI();
       // BUG-15: hard cap the fetch. AbortController fires after
       // REMOTE_FETCH_TIMEOUT_MS, causing axios to reject with a
       // CanceledError. We catch it below and dismiss the pill instead
@@ -564,6 +576,14 @@ export const useEditorCollaboration = ({
         // was in flight. Every mutation past this point touches refs
         // that now belong to the next mount (or to nothing).
         if (isUnmountingRef.current) return;
+        // Back-fill this client's acting user id from the server's echo of the
+        // request principal. Only fill when we don't already know it (a null
+        // auth context, i.e. bootstrap-admin) — never override the prop.
+        const requestUserId = (data as unknown as { requestUserId?: unknown })
+          .requestUserId;
+        if (!myUserIdRef.current && typeof requestUserId === "string") {
+          myUserIdRef.current = requestUserId;
+        }
         const responseVersion =
           typeof data.version === "number" ? data.version : null;
         const knownVersion = currentDrawingVersionRef.current;
@@ -707,7 +727,7 @@ export const useEditorCollaboration = ({
           latestElementsRef.current,
           mergedElements,
         );
-        if (diffRatio > REMOTE_SYNC_ESCALATE_DIFF_RATIO) {
+        if (!silent && diffRatio > REMOTE_SYNC_ESCALATE_DIFF_RATIO) {
           escalateRemoteSyncUI();
         }
         if (excalApi && typeof excalApi.updateScene === "function") {
@@ -743,7 +763,7 @@ export const useEditorCollaboration = ({
         lastSyncedElementOrderSigRef.current =
           computeElementOrderSig(mergedElements);
         mergedElements.forEach((el: any) => recordElementVersion(el));
-        toast.success("已從 Server 同步最新內容");
+        if (!silent) toast.success("已從 Server 同步最新內容");
       } catch (err) {
         // BUG-15: distinguish the abort we caused from a real network error.
         const isAbort =
@@ -798,69 +818,99 @@ export const useEditorCollaboration = ({
         }
       }
     };
-    socket.on("drawing-server-update", (payload: { drawingId?: string }) => {
-      if (!payload?.drawingId || payload.drawingId !== drawingId) return;
-      // BUG-17: self-echo suppression. The backend fans a scene write out
-      // to the whole `drawing_${id}` room, including the socket that just
-      // issued the save. Without this guard the sender flashes the "同步中"
-      // pill for their own edit — nothing to actually apply (our
-      // currentDrawingVersion is already at the new value from the save's
-      // response), just visual noise. The persistence layer bumps
-      // `pendingSelfEchoCountRef` once per successful save; we decrement
-      // once per broadcast within the TTL window. Consuming markers one-
-      // at-a-time keeps peer updates that race with our saves visible —
-      // each peer save produces its own broadcast event, which either
-      // arrives before our marker is set or fires after it's consumed.
-      // See SELF_ECHO_WINDOW_MS for the TTL rationale.
-      const now = Date.now();
-      const pendingEchoes = pendingSelfEchoCountRef.current;
-      const lastSelfSaveAt = lastSelfSavedAtRef.current;
-      const withinSelfEchoWindow =
-        lastSelfSaveAt > 0 && now - lastSelfSaveAt < SELF_ECHO_WINDOW_MS;
-      diagnostics.log("server-update-received", {
-        drawingId,
-        pendingEchoes,
-        withinSelfEchoWindow,
-        selfEcho: pendingEchoes > 0 && withinSelfEchoWindow,
-      });
-      if (pendingEchoes > 0 && withinSelfEchoWindow) {
-        pendingSelfEchoCountRef.current = pendingEchoes - 1;
-        // Skip both pill and debounced fetch — there is nothing new to
-        // pull; our save already synced the local baseline refs. If we
-        // scheduled a fetch here it would return the same version we
-        // already know (see the early-return in fetchAndMergeServerUpdate
-        // where responseVersion === knownVersion), so the fetch is pure
-        // overhead.
-        return;
-      }
-      if (pendingEchoes > 0 && !withinSelfEchoWindow) {
-        // Marker expired without its broadcast — could be a dropped
-        // packet or clock skew. Reset so a legitimate future peer
-        // broadcast is not silently swallowed. Fall through into the
-        // normal (peer / MCP) flow.
-        pendingSelfEchoCountRef.current = 0;
-      }
-      // F4/F3 (Round 3): light the pill on the leading edge of the burst,
-      // not once the debounced fetch starts. The persistence layer's
-      // 409-auto-merge (see 0896f88) can finish an entire apply cycle
-      // before our 500ms debounce fires, and if we only light the pill
-      // at fetch time we'd have no user-visible feedback for the actual
-      // sync window. Dismiss happens in the fetch's finally block.
-      if (
-        !serverUpdateTimerRef.current &&
-        !serverUpdateFetchInFlightRef.current
-      ) {
-        beginRemoteSyncUI();
-      }
-      // Debounce: collapse a burst of events into one fetch after 500ms of quiet.
-      if (serverUpdateTimerRef.current) {
-        clearTimeout(serverUpdateTimerRef.current);
-      }
-      serverUpdateTimerRef.current = setTimeout(() => {
-        serverUpdateTimerRef.current = null;
-        void fetchAndMergeServerUpdate();
-      }, SERVER_UPDATE_DEBOUNCE_MS);
-    });
+    socket.on(
+      "drawing-server-update",
+      (payload: {
+        drawingId?: string;
+        originSessionId?: string | null;
+        originUserId?: string | null;
+      }) => {
+        if (!payload?.drawingId || payload.drawingId !== drawingId) return;
+        // Origin-based echo suppression (replaces the BUG-17 time-window
+        // heuristic). Every scene write fans a broadcast out to the whole
+        // `drawing_${id}` room including the sender. The payload now carries
+        // the WRITER's origin (the saving session's X-Session-Id and acting
+        // user id), so each recipient decides by EXACT MATCH:
+        //
+        //   1. originSessionId === my session  → my OWN save echoing back.
+        //      Nothing to pull (the save response already advanced our
+        //      version + baseline refs). Skip entirely — no pill, no fetch.
+        //   2. originUserId === my user (different session) → my OTHER window
+        //      autosaved. The content genuinely changed, so fetch + merge,
+        //      but stay silent (no pill) — from the user's seat it's still
+        //      "me". This is the case the users reported: one window's
+        //      autosave lighting the "同步中" pill in the window they sit at.
+        //   3. anything else (another user, or an MCP write whose origin
+        //      user differs / is absent) → a real remote change. Fetch +
+        //      merge AND light the pill.
+        const mySessionId = diagnostics.getSessionId();
+        const myUserIdResolved = myUserIdRef.current;
+        const originSessionId =
+          typeof payload.originSessionId === "string"
+            ? payload.originSessionId
+            : null;
+        const originUserId =
+          typeof payload.originUserId === "string"
+            ? payload.originUserId
+            : null;
+
+        let decision:
+          | "skip-self"
+          | "silent-apply-same-user"
+          | "pill-apply-remote";
+        if (originSessionId && originSessionId === mySessionId) {
+          decision = "skip-self";
+        } else if (
+          originUserId &&
+          myUserIdResolved &&
+          originUserId === myUserIdResolved
+        ) {
+          decision = "silent-apply-same-user";
+        } else {
+          decision = "pill-apply-remote";
+        }
+
+        diagnostics.log("server-update-received", {
+          drawingId,
+          originSessionId,
+          originUserId,
+          decision,
+        });
+
+        if (decision === "skip-self") return;
+
+        const silent = decision === "silent-apply-same-user";
+
+        // F4/F3 (Round 3): light the pill on the leading edge of the burst,
+        // not once the debounced fetch starts — but only for a genuine
+        // remote update. The persistence layer's 409-auto-merge can finish
+        // an entire apply cycle before our 500ms debounce fires, so leading-
+        // edge feedback matters. Dismiss happens in the fetch's finally.
+        if (
+          !silent &&
+          !serverUpdateTimerRef.current &&
+          !serverUpdateFetchInFlightRef.current
+        ) {
+          beginRemoteSyncUI();
+        }
+        // Track whether the whole coalesced burst is silent. A single non-
+        // silent event promotes the burst to a visible sync.
+        if (serverUpdateTimerRef.current) {
+          if (!silent) serverUpdateSilentBurstRef.current = false;
+          clearTimeout(serverUpdateTimerRef.current);
+        } else {
+          serverUpdateSilentBurstRef.current = silent;
+        }
+        // Debounce: collapse a burst of events into one fetch after 500ms
+        // of quiet.
+        serverUpdateTimerRef.current = setTimeout(() => {
+          serverUpdateTimerRef.current = null;
+          const burstSilent = serverUpdateSilentBurstRef.current;
+          serverUpdateSilentBurstRef.current = false;
+          void fetchAndMergeServerUpdate({ silent: burstSilent });
+        }, SERVER_UPDATE_DEBOUNCE_MS);
+      },
+    );
     const handleActivity = (isActive: boolean) => {
       socket.emit("user-activity", { drawingId, isActive });
     };
@@ -921,8 +971,7 @@ export const useEditorCollaboration = ({
     lastPersistedElementsRef,
     lastPersistedFilesRef,
     currentDrawingVersionRef,
-    pendingSelfEchoCountRef,
-    lastSelfSavedAtRef,
+    myUserId,
     computeElementOrderSig,
     recordElementVersion,
     onAccessDenied,

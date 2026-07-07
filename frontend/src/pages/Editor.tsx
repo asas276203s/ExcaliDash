@@ -112,12 +112,6 @@ const EditorInner: React.FC = () => {
     | null
   >(null);
   const currentDrawingVersionRef = useRef<number | null>(null);
-  // BUG-17: shared between persistence (which bumps on each successful
-  // scene save) and collaboration (which decrements on each matching
-  // broadcast) so the sender's own drawing-server-update echo doesn't
-  // flash the "同步中" pill. See useEditorCollaboration.ts SELF_ECHO_WINDOW_MS.
-  const pendingSelfEchoCountRef = useRef<number>(0);
-  const lastSelfSavedAtRef = useRef<number>(0);
   const lastPersistedElementsRef = useRef<readonly any[]>([]);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const patchedAddFilesApisRef = useRef<WeakSet<object>>(new WeakSet());
@@ -174,8 +168,7 @@ const EditorInner: React.FC = () => {
       lastPersistedElementsRef,
       lastPersistedFilesRef,
       currentDrawingVersionRef,
-      pendingSelfEchoCountRef,
-      lastSelfSavedAtRef,
+      myUserId: user?.id ?? null,
       computeElementOrderSig,
       recordElementVersion,
       onAccessDenied: handleSocketAccessDenied,
@@ -258,8 +251,6 @@ const EditorInner: React.FC = () => {
       latestFiles: latestFilesRef,
       saveQueue: saveQueueRef,
       suspiciousBlankLoad: suspiciousBlankLoadRef,
-      pendingSelfEchoCount: pendingSelfEchoCountRef,
-      lastSelfSavedAt: lastSelfSavedAtRef,
     }),
     [isSyncing],
   );

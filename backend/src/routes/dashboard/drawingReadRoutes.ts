@@ -56,6 +56,11 @@ export const registerDrawingReadRoutes = (
         appState: parseJsonField(drawing.appState, {}),
         files: parseJsonField(drawing.files, {}),
         accessLevel: access,
+        // The acting principal's id for THIS request. Mirrors the `originUserId`
+        // stamped on drawing-server-update broadcasts, letting the editor decide
+        // "this echo is my own other window" even when the client-side auth
+        // context has no user (auth-disabled / bootstrap-admin mode).
+        requestUserId: principal?.kind === "user" ? principal.userId : null,
       });
     }),
   );

@@ -25,6 +25,7 @@ import {
   buildTrimS3CleanupPlan,
 } from "./storage/plans";
 import { deleteS3KeysInBatches } from "./storage/s3Delete";
+import { getSessionIdFromHeaders } from "../diagnostics/store";
 
 export type StorageRouteDeps = {
   prisma: PrismaClient;
@@ -60,8 +61,15 @@ export const registerStorageRoutes = (
    * by reloading the drawing — otherwise a collaborator's next save
    * would re-introduce the trimmed-away elements.
    */
-  const notifyServerStateChange = (drawingId: string) => {
-    io.to(`drawing_${drawingId}`).emit("drawing-server-update", { drawingId });
+  const notifyServerStateChange = (
+    drawingId: string,
+    origin: { originSessionId: string | null; originUserId: string | null },
+  ) => {
+    io.to(`drawing_${drawingId}`).emit("drawing-server-update", {
+      drawingId,
+      originSessionId: origin.originSessionId,
+      originUserId: origin.originUserId,
+    });
   };
 
   // ------------------------------------------------------------------
@@ -147,7 +155,10 @@ export const registerStorageRoutes = (
         },
       });
       invalidateDrawingsCache();
-      notifyServerStateChange(id);
+      notifyServerStateChange(id, {
+        originSessionId: getSessionIdFromHeaders(req.headers),
+        originUserId: userId,
+      });
 
       return res.json({
         trimmed: {
@@ -299,7 +310,10 @@ export const registerStorageRoutes = (
         },
       });
       invalidateDrawingsCache();
-      notifyServerStateChange(id);
+      notifyServerStateChange(id, {
+        originSessionId: getSessionIdFromHeaders(req.headers),
+        originUserId: userId,
+      });
 
       return res.json({ deleted: deletePlan.deletedCount, errors: errorCount });
     }),

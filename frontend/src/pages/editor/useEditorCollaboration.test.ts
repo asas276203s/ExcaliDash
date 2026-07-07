@@ -56,8 +56,8 @@ import {
   REMOTE_FETCH_TIMEOUT_MS,
   REMOTE_SYNC_ESCALATE_MS,
   MAX_CONSECUTIVE_REMOTE_TIMEOUTS,
-  SELF_ECHO_WINDOW_MS,
 } from "./useEditorCollaboration";
+import { diagnostics } from "../../lib/diagnostics";
 
 const makeRef = <T>(value: T): MutableRefObject<T> => ({ current: value });
 
@@ -85,8 +85,7 @@ const buildProps = (overrides: Partial<HookArgs> = {}): HookArgs => {
     lastPersistedElementsRef: makeRef<readonly any[]>([]),
     lastPersistedFilesRef: makeRef<Record<string, any>>({}),
     currentDrawingVersionRef: makeRef<number | null>(1),
-    pendingSelfEchoCountRef: makeRef<number>(0),
-    lastSelfSavedAtRef: makeRef<number>(0),
+    myUserId: "u1",
     computeElementOrderSig: (els: readonly any[]) =>
       els.map((e: any) => e.id).join(","),
     recordElementVersion: vi.fn(),
@@ -95,11 +94,30 @@ const buildProps = (overrides: Partial<HookArgs> = {}): HookArgs => {
   };
 };
 
-// Fires the socket event exactly like the backend does.
-const emitServerUpdate = (drawingId = "d1") => {
+// Fires the socket event exactly like the backend does. Accepts either a bare
+// drawingId (legacy positional form) or an options bag carrying the write
+// origin (originSessionId / originUserId) the backend now stamps on the
+// broadcast payload.
+const emitServerUpdate = (
+  drawingIdOrOpts:
+    | string
+    | {
+        drawingId?: string;
+        originSessionId?: string | null;
+        originUserId?: string | null;
+      } = "d1",
+) => {
+  const opts =
+    typeof drawingIdOrOpts === "string"
+      ? { drawingId: drawingIdOrOpts }
+      : drawingIdOrOpts;
   const handler = socketHandlers.get("drawing-server-update");
   if (!handler) throw new Error("drawing-server-update handler not registered");
-  handler({ drawingId });
+  handler({
+    drawingId: opts.drawingId ?? "d1",
+    originSessionId: opts.originSessionId ?? null,
+    originUserId: opts.originUserId ?? null,
+  });
 };
 
 describe("useEditorCollaboration drawing-server-update", () => {
@@ -900,21 +918,30 @@ describe("useEditorCollaboration drawing-server-update", () => {
     expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
   });
 
-  // BUG-17: self-echo suppression. Every successful scene save fans a
-  // drawing-server-update broadcast out to the whole room including the
-  // sender. Without suppression the sender flashes the sync pill for their
-  // own edit. The persistence layer bumps `pendingSelfEchoCountRef` per
-  // successful save; the collab hook consumes one marker per matching
-  // broadcast within SELF_ECHO_WINDOW_MS.
-  describe("self-echo suppression (BUG-17)", () => {
-    it("does NOT fire pill or fetch when a self-save marker is pending", async () => {
+  // Origin-based echo suppression (replaces the BUG-17 time-window
+  // heuristic). Every scene write fans a drawing-server-update broadcast to
+  // the whole room including the sender. The payload now carries the WRITER's
+  // origin (saving session id + acting user id), so each recipient decides by
+  // EXACT MATCH: own session → skip; own other window → apply silently (no
+  // pill); genuine remote / MCP → pill + apply.
+  describe("origin-based echo suppression", () => {
+    let sessionSpy: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      // Pin this client's session id so tests can craft exact-match / non-match
+      // origins deterministically.
+      sessionSpy = vi
+        .spyOn(diagnostics, "getSessionId")
+        .mockReturnValue("sess-self");
+    });
+    afterEach(() => {
+      sessionSpy.mockRestore();
+    });
+
+    it("skips entirely (no pill, no fetch) for the client's OWN save echo — originSessionId matches", async () => {
       const props = buildProps();
-      // Simulate a save that just succeeded.
-      props.pendingSelfEchoCountRef.current = 1;
-      props.lastSelfSavedAtRef.current = Date.now();
       renderHook(() => useEditorCollaboration(props));
-      emitServerUpdate();
-      // Even after the debounce window elapses, no fetch is scheduled.
+      // Broadcast originating from THIS session's own save.
+      emitServerUpdate({ originSessionId: "sess-self", originUserId: "u1" });
       await act(async () => {
         vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS + 100);
       });
@@ -923,13 +950,10 @@ describe("useEditorCollaboration drawing-server-update", () => {
       expect(getDrawingSpy).not.toHaveBeenCalled();
       expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
       expect(toastSuccess).not.toHaveBeenCalled();
-      // Counter consumed.
-      expect(props.pendingSelfEchoCountRef.current).toBe(0);
     });
 
-    it("still fires pill + fetch for a peer save when no self-save marker is pending", async () => {
-      // No marker set — this is the classic peer / MCP broadcast case.
-      const props = buildProps();
+    it("applies SILENTLY (fetch + merge, no pill/toast) for the SAME user's OTHER window — originUserId matches, session differs", async () => {
+      const props = buildProps({ myUserId: "u1" });
       const persisted = [{ id: "e1", version: 1, versionNonce: 1, updated: 1 }];
       props.lastPersistedElementsRef.current = persisted;
       props.latestElementsRef.current = persisted;
@@ -942,25 +966,48 @@ describe("useEditorCollaboration drawing-server-update", () => {
         version: 4,
       });
       renderHook(() => useEditorCollaboration(props));
-      emitServerUpdate();
+      // Same user (u1), but a DIFFERENT session than ours (sess-self).
+      emitServerUpdate({ originSessionId: "sess-other-window", originUserId: "u1" });
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+      });
+      // Content genuinely changed → it IS applied.
+      await vi.waitFor(() => {
+        expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
+      });
+      // ...but silently — the success toast (a proxy for the visible sync UI)
+      // is suppressed.
+      expect(toastSuccess).not.toHaveBeenCalled();
+    });
+
+    it("fires pill + applies (toast shown) for a genuine REMOTE user's save — originUserId differs", async () => {
+      const props = buildProps({ myUserId: "u1" });
+      const persisted = [{ id: "e1", version: 1, versionNonce: 1, updated: 1 }];
+      props.lastPersistedElementsRef.current = persisted;
+      props.latestElementsRef.current = persisted;
+      props.currentDrawingVersionRef.current = 1;
+      getDrawingImpl = async () => ({
+        id: "d1",
+        elements: [{ id: "e1", version: 2, versionNonce: 5, updated: 100 }],
+        appState: {},
+        files: {},
+        version: 4,
+      });
+      renderHook(() => useEditorCollaboration(props));
+      emitServerUpdate({ originSessionId: "sess-peer", originUserId: "someone-else" });
       await act(async () => {
         vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
       });
       await vi.waitFor(() => {
-        expect(getDrawingSpy).toHaveBeenCalled();
+        expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
       });
-      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
+      expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
     });
 
-    it("still fires pill + fetch for an MCP save (no sender socket, no self-marker)", async () => {
-      // MCP-triggered saves go through the same drawing-server-update
-      // broadcast path but they don't originate from the client — the
-      // client has no pending self-echo marker for them. Same shape as
-      // the peer test above; kept as a distinct row for regression clarity.
-      const props = buildProps();
-      // Explicitly zero marker to encode the intent.
-      props.pendingSelfEchoCountRef.current = 0;
-      props.lastSelfSavedAtRef.current = 0;
+    it("fires pill + applies for an MCP save whose origin has no user id", async () => {
+      // An MCP / service write may broadcast with a null originUserId (or one
+      // that doesn't match ours). Treated as a genuine remote change.
+      const props = buildProps({ myUserId: "u1" });
       const persisted = [{ id: "e1", version: 1, versionNonce: 1, updated: 1 }];
       props.lastPersistedElementsRef.current = persisted;
       props.latestElementsRef.current = persisted;
@@ -976,7 +1023,7 @@ describe("useEditorCollaboration drawing-server-update", () => {
         version: 4,
       });
       renderHook(() => useEditorCollaboration(props));
-      emitServerUpdate();
+      emitServerUpdate({ originSessionId: null, originUserId: null });
       await act(async () => {
         vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
       });
@@ -986,73 +1033,88 @@ describe("useEditorCollaboration drawing-server-update", () => {
       expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
     });
 
-    it("consumes one marker per broadcast — subsequent peer broadcast still fires pill", async () => {
-      // Save 1 → pending=1. Save 1's echo arrives → consume → pending=0.
-      // Peer's save broadcast arrives → no marker → fetch + pill.
-      const props = buildProps();
-      props.pendingSelfEchoCountRef.current = 1;
-      props.lastSelfSavedAtRef.current = Date.now();
+    it("promotes a coalesced burst to visible when a remote event joins a silent one", async () => {
+      // A same-user (silent) event and a genuine remote event debounced into
+      // ONE fetch must resolve as visible — the single remote change earns the
+      // pill even though the burst started silent.
+      const props = buildProps({ myUserId: "u1" });
       const persisted = [{ id: "e1", version: 1, versionNonce: 1, updated: 1 }];
-      props.lastPersistedElementsRef.current = persisted;
-      props.latestElementsRef.current = persisted;
-      props.currentDrawingVersionRef.current = 5; // self-save advanced this
-      getDrawingImpl = async () => ({
-        id: "d1",
-        elements: [{ id: "e1", version: 3 }, { id: "peer-1", version: 1 }],
-        appState: {},
-        files: {},
-        version: 6,
-      });
-      renderHook(() => useEditorCollaboration(props));
-      // First event: self-echo, swallowed.
-      emitServerUpdate();
-      expect(props.pendingSelfEchoCountRef.current).toBe(0);
-      // Second event: peer save.
-      emitServerUpdate();
-      await act(async () => {
-        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
-      });
-      await vi.waitFor(() => {
-        expect(getDrawingSpy).toHaveBeenCalled();
-      });
-      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
-    });
-
-    it("resets a stale marker whose broadcast never arrived and fires normally", async () => {
-      // Marker set well outside the TTL window. Falling through to the
-      // peer flow, and the counter is reset so a future genuine self-save
-      // starts from a clean baseline.
-      const props = buildProps();
-      props.pendingSelfEchoCountRef.current = 1;
-      props.lastSelfSavedAtRef.current = Date.now() - SELF_ECHO_WINDOW_MS - 5_000;
-      const persisted = [{ id: "e1", version: 1 }];
       props.lastPersistedElementsRef.current = persisted;
       props.latestElementsRef.current = persisted;
       props.currentDrawingVersionRef.current = 1;
       getDrawingImpl = async () => ({
         id: "d1",
-        elements: [{ id: "e1", version: 2 }],
+        elements: [{ id: "e1", version: 2, versionNonce: 5, updated: 100 }],
         appState: {},
         files: {},
-        version: 2,
+        version: 4,
       });
       renderHook(() => useEditorCollaboration(props));
-      emitServerUpdate();
+      // Silent event first (same user, other window)...
+      emitServerUpdate({ originSessionId: "sess-other-window", originUserId: "u1" });
+      // ...then a genuine remote event before the debounce fires.
+      emitServerUpdate({ originSessionId: "sess-peer", originUserId: "someone-else" });
       await act(async () => {
         vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
       });
       await vi.waitFor(() => {
-        expect(getDrawingSpy).toHaveBeenCalled();
+        expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
       });
-      // Counter reset by the stale-marker branch so a subsequent legitimate
-      // self-save marker set to 1 will be consumed cleanly.
-      expect(props.pendingSelfEchoCountRef.current).toBe(0);
+      // Only ONE coalesced fetch, and it was visible.
+      expect(getDrawingSpy).toHaveBeenCalledTimes(1);
+      expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
     });
 
-    it("exposes SELF_ECHO_WINDOW_MS as a sane, testable constant", () => {
-      // Guards against 0 / undefined which would disable the guard.
-      expect(SELF_ECHO_WINDOW_MS).toBeGreaterThanOrEqual(1_000);
-      expect(SELF_ECHO_WINDOW_MS).toBeLessThanOrEqual(10_000);
+    it("back-fills the acting user id from the drawing GET response (bootstrap: auth context has no user)", async () => {
+      // myUserId prop is null (auth-disabled / bootstrap-admin). The first
+      // genuine remote fetch learns the acting id from data.requestUserId, so
+      // a subsequent same-user broadcast is then recognised and applied
+      // silently.
+      const props = buildProps({ myUserId: null });
+      const persisted = [{ id: "e1", version: 1, versionNonce: 1, updated: 1 }];
+      props.lastPersistedElementsRef.current = persisted;
+      props.latestElementsRef.current = persisted;
+      props.currentDrawingVersionRef.current = 1;
+      getDrawingImpl = async () => ({
+        id: "d1",
+        elements: [{ id: "e1", version: 2, versionNonce: 5, updated: 100 }],
+        appState: {},
+        files: {},
+        version: 4,
+        requestUserId: "bootstrap-admin",
+      });
+      renderHook(() => useEditorCollaboration(props));
+      // First event (unknown origin) → visible fetch that back-fills the id.
+      emitServerUpdate({ originSessionId: "sess-peer", originUserId: "bootstrap-admin" });
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+      });
+      await vi.waitFor(() => {
+        expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
+      });
+      // The first one shows the toast (id wasn't known yet).
+      expect(toastSuccess).toHaveBeenCalledTimes(1);
+      // Advance the version so the second fetch is not an early no-op.
+      props.currentDrawingVersionRef.current = 4;
+      getDrawingImpl = async () => ({
+        id: "d1",
+        elements: [{ id: "e1", version: 3, versionNonce: 9, updated: 200 }],
+        appState: {},
+        files: {},
+        version: 5,
+        requestUserId: "bootstrap-admin",
+      });
+      toastSuccess.mockClear();
+      // Second event from the SAME user's other window — now recognised, so
+      // applied silently (no additional toast).
+      emitServerUpdate({ originSessionId: "sess-other-window", originUserId: "bootstrap-admin" });
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+      });
+      await vi.waitFor(() => {
+        expect(getDrawingSpy).toHaveBeenCalledTimes(2);
+      });
+      expect(toastSuccess).not.toHaveBeenCalled();
     });
   });
 });

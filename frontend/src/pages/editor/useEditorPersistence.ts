@@ -39,15 +39,6 @@ type PersistenceRefs = {
   latestFiles: MutableRefObject<any>;
   saveQueue: MutableRefObject<Promise<void>>;
   suspiciousBlankLoad: MutableRefObject<boolean>;
-  /**
-   * BUG-17: incremented after every successful scene save so the collab
-   * hook's `drawing-server-update` handler can swallow the self-echo
-   * broadcast without flashing the "同步中" pill. See
-   * useEditorCollaboration.ts for the consumption side.
-   */
-  pendingSelfEchoCount: MutableRefObject<number>;
-  /** Timestamp of the last successful self-save; paired with the counter. */
-  lastSelfSavedAt: MutableRefObject<number>;
 };
 
 type UseEditorPersistenceParams = {
@@ -189,15 +180,6 @@ export const useEditorPersistence = ({
           if (typeof updated.version === "number") {
             refs.currentDrawingVersion.current = updated.version;
           }
-          // BUG-17: mark self-echo so the collab hook can swallow the
-          // matching drawing-server-update broadcast. Backend emits ONE
-          // broadcast per successful scene write, so we increment ONCE
-          // per successful save regardless of which attempt (0 or 1)
-          // landed. The 409-auto-merge path calls persistScene(1, …)
-          // which lands here again — that second success also produces a
-          // broadcast, so bumping again is correct.
-          refs.pendingSelfEchoCount.current += 1;
-          refs.lastSelfSavedAt.current = Date.now();
           refs.lastPersistedElements.current = elementsForAttempt;
           if (filesFlag) {
             refs.lastPersistedFiles.current = filesForAttempt;
