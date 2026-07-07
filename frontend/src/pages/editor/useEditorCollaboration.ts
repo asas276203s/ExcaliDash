@@ -6,6 +6,7 @@ import * as api from "../../api";
 import { diagnostics } from "../../lib/diagnostics";
 import type { UserIdentity } from "../../utils/identity";
 import { mergeElements } from "../../utils/element-merge";
+import { normalizeServerElements } from "../../utils/normalize-server-elements";
 import {
   buildRemoteSceneUpdate,
   getPersistedAppState,
@@ -632,7 +633,11 @@ export const useEditorCollaboration = ({
           toast.info("Server 有更新、請先儲存你的改動");
           return;
         }
-        const elements = Array.isArray(data.elements) ? data.elements : [];
+        // Normalize server elements (which may be MCP-authored and missing
+        // required fields like `groupIds`) BEFORE they touch the merge/render
+        // pipeline. Without this an MCP write crashes Excalidraw on
+        // `element.groupIds.length` (the 白屏 root cause).
+        const elements = normalizeServerElements(data.elements);
         const files =
           data.files && typeof data.files === "object" ? data.files : {};
         // BUG-14 (refined by F1 Round 3): mirror the suspiciousBlankLoad

@@ -1,5 +1,6 @@
 import express from "express";
 import { canViewDrawing, getDrawingAccess } from "../../authz/sharing";
+import { normalizeDrawingElements } from "../../utils/normalizeElements";
 import { toPublicTrashCollectionId } from "./trash";
 import type { DrawingRouteContext } from "./drawingRouteContext";
 
@@ -52,7 +53,11 @@ export const registerDrawingReadRoutes = (
         collectionId: isOwner
           ? toPublicTrashCollectionId(drawing.collectionId, drawing.userId)
           : null,
-        elements: parseJsonField(drawing.elements, []),
+        // Normalize on read so even drawings whose elements were persisted by
+        // an MCP write (and are missing required fields like `groupIds`) come
+        // back well-formed. This cleans existing dirty rows WITHOUT a data
+        // migration — the client can never receive a crash-inducing element.
+        elements: normalizeDrawingElements(parseJsonField(drawing.elements, [])),
         appState: parseJsonField(drawing.appState, {}),
         files: parseJsonField(drawing.files, {}),
         accessLevel: access,

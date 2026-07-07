@@ -233,8 +233,20 @@ describe("useEditorCollaboration drawing-server-update", () => {
     await vi.waitFor(() => {
       expect(updateScene).toHaveBeenCalled();
     });
+    // Server elements are now normalized before they reach updateScene:
+    // missing base fields (e.g. `groupIds`) are backfilled to prevent the
+    // renderer crash. Identity + version fields must be preserved, and the
+    // crash-inducing field is now a proper array.
+    const expectNormalizedNextElements = (els: any[]) => {
+      expect(els.map((e) => e.id)).toEqual(["e1", "e2"]);
+      expect(els.every((e) => Array.isArray(e.groupIds))).toBe(true);
+      const e1 = els.find((e) => e.id === "e1");
+      const e2 = els.find((e) => e.id === "e2");
+      expect(e1).toMatchObject({ version: 2, versionNonce: 5, updated: 100 });
+      expect(e2).toMatchObject({ version: 1, versionNonce: 6, updated: 100 });
+    };
     const payload = updateScene.mock.calls[0][0];
-    expect(payload.elements).toEqual(nextElements);
+    expectNormalizedNextElements(payload.elements);
     expect(payload.appState.viewBackgroundColor).toBe("#eef");
     expect(payload.captureUpdate).toBe("NEVER");
     expect(addFiles).toHaveBeenCalledWith([
@@ -242,8 +254,8 @@ describe("useEditorCollaboration drawing-server-update", () => {
     ]);
     // Baseline refs updated so subsequent saves target the new version.
     expect(props.currentDrawingVersionRef.current).toBe(4);
-    expect(props.latestElementsRef.current).toEqual(nextElements);
-    expect(props.lastPersistedElementsRef.current).toEqual(nextElements);
+    expectNormalizedNextElements(props.latestElementsRef.current as any[]);
+    expectNormalizedNextElements(props.lastPersistedElementsRef.current as any[]);
     expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
   });
 

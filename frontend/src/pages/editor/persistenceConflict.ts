@@ -2,6 +2,7 @@ import type { MutableRefObject } from "react";
 import { toast } from "sonner";
 import * as api from "../../api";
 import { diffCount, mergeElements } from "../../utils/element-merge";
+import { normalizeServerElements } from "../../utils/normalize-server-elements";
 import { getFilesDelta } from "./shared";
 
 /**
@@ -83,9 +84,10 @@ export const resolveVersionConflict = async ({
     }
     throw new DrawingSaveConflictError();
   }
-  const freshElements = Array.isArray(fresh.elements)
-    ? (fresh.elements as any[])
-    : [];
+  // Normalize before merge/render: the fresh server copy fetched on a 409 can
+  // be MCP-authored and missing required fields (e.g. `groupIds`). Feeding raw
+  // elements into updateScene here is the third crash entry point.
+  const freshElements = normalizeServerElements(fresh.elements);
   const freshFiles =
     fresh.files && typeof fresh.files === "object"
       ? (fresh.files as Record<string, any>)

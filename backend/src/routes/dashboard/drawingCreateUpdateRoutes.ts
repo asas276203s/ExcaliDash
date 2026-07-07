@@ -12,6 +12,7 @@ import {
   getSessionIdFromHeaders,
   recordServerLog,
 } from "../../diagnostics/store";
+import { normalizeDrawingElements } from "../../utils/normalizeElements";
 import {
   getUserTrashCollectionId,
   isTrashCollectionId,
@@ -158,7 +159,10 @@ export const registerDrawingCreateUpdateRoutes = (
         data: {
           id: newDrawingId,
           name: drawingName,
-          elements: JSON.stringify(payload.elements),
+          // Normalize before persist so MCP / imported elements land in the DB
+          // already well-formed (groupIds etc.) — defence in depth alongside
+          // the read-path normalize.
+          elements: JSON.stringify(normalizeDrawingElements(payload.elements)),
           appState: JSON.stringify(payload.appState),
           userId: req.user.id,
           collectionId: targetCollectionId,
@@ -275,7 +279,11 @@ export const registerDrawingCreateUpdateRoutes = (
 
       if (payload.name !== undefined) data.name = payload.name;
       if (payload.elements !== undefined)
-        data.elements = JSON.stringify(payload.elements);
+        // Normalize on write (MCP updates hit this path) so the persisted row
+        // is well-formed and the broadcast-triggered refetch is clean.
+        data.elements = JSON.stringify(
+          normalizeDrawingElements(payload.elements),
+        );
       if (payload.appState !== undefined)
         data.appState = JSON.stringify(payload.appState);
       let processedFilesForUpdate: Record<string, unknown> | undefined;

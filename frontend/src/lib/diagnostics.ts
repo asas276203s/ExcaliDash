@@ -81,7 +81,21 @@ export function hasErrorSince(
 
 // --- Environment guards ---------------------------------------------------
 
-const isBrowser = typeof window !== "undefined";
+/**
+ * True ONLY on the browser main thread. We require BOTH `window` and
+ * `document` because a Web Worker context (Excalidraw runs workers, and Vite
+ * can code-split a shared chunk into a worker bundle) has neither a real
+ * `document` nor `window` — touching them there throws
+ * `ReferenceError: Can't find variable: document` at module eval, exactly the
+ * worker-context crash seen in the diagnostics trace. Every DOM / storage /
+ * listener access in this module is gated on this flag so the module is inert
+ * (no side effects, no throws) if it is ever evaluated off the main thread.
+ */
+const isBrowserMain =
+  typeof window !== "undefined" && typeof document !== "undefined";
+
+// Backwards-compatible alias used throughout the class below.
+const isBrowser = isBrowserMain;
 
 const readSessionId = (): string => {
   const gen = () => {

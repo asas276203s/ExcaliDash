@@ -4,6 +4,7 @@ import type { MutableRefObject } from "react";
 import { toast } from "sonner";
 import * as api from "../../api";
 import { diagnostics } from "../../lib/diagnostics";
+import { normalizeServerElements } from "../../utils/normalize-server-elements";
 import { getPersistedAppState, hasRenderableElements } from "./shared";
 
 type AccessLevel = "none" | "view" | "edit" | "owner";
@@ -144,7 +145,10 @@ export const useEditorSceneLoader = ({
             ? data.accessLevel
             : "owner",
         );
-        const elements = data.elements || [];
+        // Normalize on initial load too: the very first render of an
+        // MCP-authored drawing (elements missing `groupIds` etc.) is the
+        // "打開 dash 就白屏" path. See normalize-server-elements.ts.
+        const elements = normalizeServerElements(data.elements);
         const files = data.files || {};
         const hasPreview =
           typeof data.preview === "string" && data.preview.trim().length > 0;
