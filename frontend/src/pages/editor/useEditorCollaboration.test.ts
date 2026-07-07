@@ -56,6 +56,7 @@ import {
   REMOTE_FETCH_TIMEOUT_MS,
   REMOTE_SYNC_ESCALATE_MS,
   MAX_CONSECUTIVE_REMOTE_TIMEOUTS,
+  SELF_ECHO_WINDOW_MS,
 } from "./useEditorCollaboration";
 
 const makeRef = <T>(value: T): MutableRefObject<T> => ({ current: value });
@@ -84,6 +85,8 @@ const buildProps = (overrides: Partial<HookArgs> = {}): HookArgs => {
     lastPersistedElementsRef: makeRef<readonly any[]>([]),
     lastPersistedFilesRef: makeRef<Record<string, any>>({}),
     currentDrawingVersionRef: makeRef<number | null>(1),
+    pendingSelfEchoCountRef: makeRef<number>(0),
+    lastSelfSavedAtRef: makeRef<number>(0),
     computeElementOrderSig: (els: readonly any[]) =>
       els.map((e: any) => e.id).join(","),
     recordElementVersion: vi.fn(),
@@ -763,5 +766,161 @@ describe("useEditorCollaboration drawing-server-update", () => {
       expect(toastSuccess).not.toHaveBeenCalled();
     });
     expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
+  });
+
+  // BUG-17: self-echo suppression. Every successful scene save fans a
+  // drawing-server-update broadcast out to the whole room including the
+  // sender. Without suppression the sender flashes the sync pill for their
+  // own edit. The persistence layer bumps `pendingSelfEchoCountRef` per
+  // successful save; the collab hook consumes one marker per matching
+  // broadcast within SELF_ECHO_WINDOW_MS.
+  describe("self-echo suppression (BUG-17)", () => {
+    it("does NOT fire pill or fetch when a self-save marker is pending", async () => {
+      const props = buildProps();
+      // Simulate a save that just succeeded.
+      props.pendingSelfEchoCountRef.current = 1;
+      props.lastSelfSavedAtRef.current = Date.now();
+      renderHook(() => useEditorCollaboration(props));
+      emitServerUpdate();
+      // Even after the debounce window elapses, no fetch is scheduled.
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS + 100);
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(getDrawingSpy).not.toHaveBeenCalled();
+      expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
+      expect(toastSuccess).not.toHaveBeenCalled();
+      // Counter consumed.
+      expect(props.pendingSelfEchoCountRef.current).toBe(0);
+    });
+
+    it("still fires pill + fetch for a peer save when no self-save marker is pending", async () => {
+      // No marker set — this is the classic peer / MCP broadcast case.
+      const props = buildProps();
+      const persisted = [{ id: "e1", version: 1, versionNonce: 1, updated: 1 }];
+      props.lastPersistedElementsRef.current = persisted;
+      props.latestElementsRef.current = persisted;
+      props.currentDrawingVersionRef.current = 1;
+      getDrawingImpl = async () => ({
+        id: "d1",
+        elements: [{ id: "e1", version: 2, versionNonce: 5, updated: 100 }],
+        appState: {},
+        files: {},
+        version: 4,
+      });
+      renderHook(() => useEditorCollaboration(props));
+      emitServerUpdate();
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+      });
+      await vi.waitFor(() => {
+        expect(getDrawingSpy).toHaveBeenCalled();
+      });
+      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
+    });
+
+    it("still fires pill + fetch for an MCP save (no sender socket, no self-marker)", async () => {
+      // MCP-triggered saves go through the same drawing-server-update
+      // broadcast path but they don't originate from the client — the
+      // client has no pending self-echo marker for them. Same shape as
+      // the peer test above; kept as a distinct row for regression clarity.
+      const props = buildProps();
+      // Explicitly zero marker to encode the intent.
+      props.pendingSelfEchoCountRef.current = 0;
+      props.lastSelfSavedAtRef.current = 0;
+      const persisted = [{ id: "e1", version: 1, versionNonce: 1, updated: 1 }];
+      props.lastPersistedElementsRef.current = persisted;
+      props.latestElementsRef.current = persisted;
+      props.currentDrawingVersionRef.current = 1;
+      getDrawingImpl = async () => ({
+        id: "d1",
+        elements: [
+          { id: "e1", version: 2, versionNonce: 5, updated: 100 },
+          { id: "e-mcp", version: 1, versionNonce: 6, updated: 100 },
+        ],
+        appState: {},
+        files: {},
+        version: 4,
+      });
+      renderHook(() => useEditorCollaboration(props));
+      emitServerUpdate();
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+      });
+      await vi.waitFor(() => {
+        expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
+      });
+      expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
+    });
+
+    it("consumes one marker per broadcast — subsequent peer broadcast still fires pill", async () => {
+      // Save 1 → pending=1. Save 1's echo arrives → consume → pending=0.
+      // Peer's save broadcast arrives → no marker → fetch + pill.
+      const props = buildProps();
+      props.pendingSelfEchoCountRef.current = 1;
+      props.lastSelfSavedAtRef.current = Date.now();
+      const persisted = [{ id: "e1", version: 1, versionNonce: 1, updated: 1 }];
+      props.lastPersistedElementsRef.current = persisted;
+      props.latestElementsRef.current = persisted;
+      props.currentDrawingVersionRef.current = 5; // self-save advanced this
+      getDrawingImpl = async () => ({
+        id: "d1",
+        elements: [{ id: "e1", version: 3 }, { id: "peer-1", version: 1 }],
+        appState: {},
+        files: {},
+        version: 6,
+      });
+      renderHook(() => useEditorCollaboration(props));
+      // First event: self-echo, swallowed.
+      emitServerUpdate();
+      expect(props.pendingSelfEchoCountRef.current).toBe(0);
+      // Second event: peer save.
+      emitServerUpdate();
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+      });
+      await vi.waitFor(() => {
+        expect(getDrawingSpy).toHaveBeenCalled();
+      });
+      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
+    });
+
+    it("resets a stale marker whose broadcast never arrived and fires normally", async () => {
+      // Marker set well outside the TTL window. Falling through to the
+      // peer flow, and the counter is reset so a future genuine self-save
+      // starts from a clean baseline.
+      const props = buildProps();
+      props.pendingSelfEchoCountRef.current = 1;
+      props.lastSelfSavedAtRef.current = Date.now() - SELF_ECHO_WINDOW_MS - 5_000;
+      const persisted = [{ id: "e1", version: 1 }];
+      props.lastPersistedElementsRef.current = persisted;
+      props.latestElementsRef.current = persisted;
+      props.currentDrawingVersionRef.current = 1;
+      getDrawingImpl = async () => ({
+        id: "d1",
+        elements: [{ id: "e1", version: 2 }],
+        appState: {},
+        files: {},
+        version: 2,
+      });
+      renderHook(() => useEditorCollaboration(props));
+      emitServerUpdate();
+      await act(async () => {
+        vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+      });
+      await vi.waitFor(() => {
+        expect(getDrawingSpy).toHaveBeenCalled();
+      });
+      // Counter reset by the stale-marker branch so a subsequent legitimate
+      // self-save marker set to 1 will be consumed cleanly.
+      expect(props.pendingSelfEchoCountRef.current).toBe(0);
+    });
+
+    it("exposes SELF_ECHO_WINDOW_MS as a sane, testable constant", () => {
+      // Guards against 0 / undefined which would disable the guard.
+      expect(SELF_ECHO_WINDOW_MS).toBeGreaterThanOrEqual(1_000);
+      expect(SELF_ECHO_WINDOW_MS).toBeLessThanOrEqual(10_000);
+    });
   });
 });

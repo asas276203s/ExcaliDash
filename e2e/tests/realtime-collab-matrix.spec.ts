@@ -683,4 +683,67 @@ test.describe("G. Sync-pill visual (8 rows)", () => {
     // TODO: fire MCP with a 30%+ diff, then assert
     // [data-testid="remote-sync-overlay"] becomes visible.
   });
+
+  test("G-V9 [P0] self-save in single tab does NOT flash the sync pill (BUG-17)", async ({
+    page,
+    request,
+  }) => {
+    // Regression guard for BUG-17: the backend broadcasts drawing-server-update
+    // to the WHOLE room including the sender. Before the fix, a user editing
+    // alone would see "同步中" flash on every save. After the fix, the sender's
+    // own broadcast is swallowed via a pendingSelfEchoCount marker.
+    const drawing = await createDrawing(request, { name: `GV9_${Date.now()}` });
+    createdIds.push(drawing.id);
+    await page.goto(`/editor/${drawing.id}`);
+    await waitForCanvas(page);
+
+    // Track every aria-busy=true transition so a flash still fails us.
+    const pillFlashCount = await page.evaluate(() => {
+      return new Promise<number>((resolve) => {
+        (window as any).__PILL_FLASH_COUNT__ = 0;
+        const target = document.querySelector(
+          '[data-testid="remote-sync-pill"]',
+        );
+        if (!target) return resolve(-1);
+        const observer = new MutationObserver((mutations) => {
+          for (const m of mutations) {
+            if (
+              m.type === "attributes" &&
+              m.attributeName === "aria-busy" &&
+              (m.target as Element).getAttribute("aria-busy") === "true"
+            ) {
+              (window as any).__PILL_FLASH_COUNT__ =
+                ((window as any).__PILL_FLASH_COUNT__ || 0) + 1;
+            }
+          }
+        });
+        observer.observe(target, { attributes: true });
+        (window as any).__PILL_OBSERVER_READY__ = true;
+        resolve(0);
+      });
+    });
+    expect(pillFlashCount).toBe(0);
+
+    // Now edit locally: draw a rectangle. This drives a save via the
+    // debounced save flow, which will produce a broadcast to the drawing
+    // room including our own socket.
+    const box = await getCanvasBox(page);
+    await page.keyboard.press("r");
+    await page.mouse.move(box.x + 260, box.y + 240);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 380, box.y + 320, { steps: 3 });
+    await page.mouse.up();
+    // The debounced save is 1s; the socket echo lands very shortly after.
+    // Wait through both to catch any pill flash.
+    await page.waitForTimeout(2_500);
+
+    const finalFlashCount = await page.evaluate(
+      () => (window as any).__PILL_FLASH_COUNT__ || 0,
+    );
+    // Zero flashes: the self-echo was swallowed.
+    expect(finalFlashCount).toBe(0);
+    // Pill should also currently be aria-busy=false.
+    const pill = page.locator(`[data-testid="${SYNC_PILL_TESTID}"]`);
+    await expect(pill).toHaveAttribute("aria-busy", "false");
+  });
 });

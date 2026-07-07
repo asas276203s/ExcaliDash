@@ -28,6 +28,17 @@ type UseEditorCollaborationInput = {
   lastPersistedElementsRef: MutableRefObject<readonly any[]>;
   lastPersistedFilesRef: MutableRefObject<Record<string, any>>;
   currentDrawingVersionRef: MutableRefObject<number | null>;
+  /**
+   * BUG-17: bumped by the persistence layer after every successful self-save.
+   * Each successful scene save produces one backend broadcast to the drawing
+   * room; that broadcast fans out to the sender's own socket too. The
+   * `drawing-server-update` handler decrements this counter to swallow the
+   * echo — see the "self-echo suppression" branch there.
+   */
+  pendingSelfEchoCountRef: MutableRefObject<number>;
+  /** Wall-clock ms of the last self-save success. Paired with the counter to
+   *  guard against a stale marker from a lost/dropped broadcast. */
+  lastSelfSavedAtRef: MutableRefObject<number>;
   computeElementOrderSig: (elements: readonly any[]) => string;
   recordElementVersion: (element: any) => void;
   onAccessDenied: () => void;
@@ -69,6 +80,16 @@ export const REMOTE_SYNC_ESCALATE_MS = 400;
  * be visually replaced — worth the stronger cue.
  */
 export const REMOTE_SYNC_ESCALATE_DIFF_RATIO = 0.3;
+
+/**
+ * BUG-17: TTL on the self-echo marker. A successful self-save records a
+ * timestamp; if the corresponding broadcast doesn't come back within this
+ * window we assume it was dropped and reset the pending counter so a
+ * legitimate future peer broadcast is not silently swallowed. 3s is
+ * comfortably above the 500ms socket → broadcast round-trip we measure in
+ * practice while still short enough to reset before the next user save.
+ */
+export const SELF_ECHO_WINDOW_MS = 3_000;
 
 const computeElementDiffRatio = (
   before: readonly any[],
@@ -112,6 +133,8 @@ export const useEditorCollaboration = ({
   lastPersistedElementsRef,
   lastPersistedFilesRef,
   currentDrawingVersionRef,
+  pendingSelfEchoCountRef,
+  lastSelfSavedAtRef,
   computeElementOrderSig,
   recordElementVersion,
   onAccessDenied,
@@ -692,6 +715,40 @@ export const useEditorCollaboration = ({
     };
     socket.on("drawing-server-update", (payload: { drawingId?: string }) => {
       if (!payload?.drawingId || payload.drawingId !== drawingId) return;
+      // BUG-17: self-echo suppression. The backend fans a scene write out
+      // to the whole `drawing_${id}` room, including the socket that just
+      // issued the save. Without this guard the sender flashes the "同步中"
+      // pill for their own edit — nothing to actually apply (our
+      // currentDrawingVersion is already at the new value from the save's
+      // response), just visual noise. The persistence layer bumps
+      // `pendingSelfEchoCountRef` once per successful save; we decrement
+      // once per broadcast within the TTL window. Consuming markers one-
+      // at-a-time keeps peer updates that race with our saves visible —
+      // each peer save produces its own broadcast event, which either
+      // arrives before our marker is set or fires after it's consumed.
+      // See SELF_ECHO_WINDOW_MS for the TTL rationale.
+      const now = Date.now();
+      const pendingEchoes = pendingSelfEchoCountRef.current;
+      const lastSelfSaveAt = lastSelfSavedAtRef.current;
+      const withinSelfEchoWindow =
+        lastSelfSaveAt > 0 && now - lastSelfSaveAt < SELF_ECHO_WINDOW_MS;
+      if (pendingEchoes > 0 && withinSelfEchoWindow) {
+        pendingSelfEchoCountRef.current = pendingEchoes - 1;
+        // Skip both pill and debounced fetch — there is nothing new to
+        // pull; our save already synced the local baseline refs. If we
+        // scheduled a fetch here it would return the same version we
+        // already know (see the early-return in fetchAndMergeServerUpdate
+        // where responseVersion === knownVersion), so the fetch is pure
+        // overhead.
+        return;
+      }
+      if (pendingEchoes > 0 && !withinSelfEchoWindow) {
+        // Marker expired without its broadcast — could be a dropped
+        // packet or clock skew. Reset so a legitimate future peer
+        // broadcast is not silently swallowed. Fall through into the
+        // normal (peer / MCP) flow.
+        pendingSelfEchoCountRef.current = 0;
+      }
       // F4/F3 (Round 3): light the pill on the leading edge of the burst,
       // not once the debounced fetch starts. The persistence layer's
       // 409-auto-merge (see 0896f88) can finish an entire apply cycle
@@ -773,6 +830,8 @@ export const useEditorCollaboration = ({
     lastPersistedElementsRef,
     lastPersistedFilesRef,
     currentDrawingVersionRef,
+    pendingSelfEchoCountRef,
+    lastSelfSavedAtRef,
     computeElementOrderSig,
     recordElementVersion,
     onAccessDenied,
