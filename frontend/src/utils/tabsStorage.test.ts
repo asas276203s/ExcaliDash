@@ -5,6 +5,7 @@ import {
   OPEN_TABS_KEY,
   appendTabToStorage,
   buildTabsSearch,
+  isTabsHiddenPath,
   moveTabInStorage,
   parseTabsFromSearch,
   popClosedTab,
@@ -13,6 +14,7 @@ import {
   readClosedTabs,
   readOpenTabs,
   replaceActiveTabInStorage,
+  stripTabsFromSearch,
   writeActiveTab,
   writeClosedTabs,
   writeOpenTabs,
@@ -136,6 +138,41 @@ describe("URL search helpers", () => {
   it("drops tabs/active when list empty", () => {
     const out = buildTabsSearch("?tabs=x&active=x", [], null);
     expect(out).toBe("");
+  });
+});
+
+describe("shared-route tab hiding (privacy)", () => {
+  it("treats /shared/:id as a hidden tab route", () => {
+    expect(isTabsHiddenPath("/shared/abc123")).toBe(true);
+    expect(isTabsHiddenPath("/shared")).toBe(true);
+  });
+
+  it("keeps the tab workspace on owner routes", () => {
+    expect(isTabsHiddenPath("/editor/abc123")).toBe(false);
+    expect(isTabsHiddenPath("/")).toBe(false);
+    expect(isTabsHiddenPath("/collections")).toBe(false);
+    expect(isTabsHiddenPath("/settings")).toBe(false);
+  });
+
+  it("hides tabs on auth routes", () => {
+    expect(isTabsHiddenPath("/login")).toBe(true);
+    expect(isTabsHiddenPath("/auth-setup")).toBe(true);
+  });
+
+  it("stripTabsFromSearch removes tabs+active but preserves other params", () => {
+    // A leaked share URL would carry other drawings' ids in `tabs`.
+    const cleaned = stripTabsFromSearch(
+      "?tabs=target,secret-drawing-1,secret-drawing-2&active=target&addLibrary=x",
+    );
+    const params = new URLSearchParams(cleaned.replace(/^\?/, ""));
+    expect(params.get("tabs")).toBeNull();
+    expect(params.get("active")).toBeNull();
+    expect(params.get("addLibrary")).toBe("x");
+  });
+
+  it("stripTabsFromSearch returns empty string when nothing else remains", () => {
+    expect(stripTabsFromSearch("?tabs=a,b,c&active=a")).toBe("");
+    expect(stripTabsFromSearch("")).toBe("");
   });
 });
 

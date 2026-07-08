@@ -10,6 +10,7 @@ import {
   type UseTabsResult,
   type EditorTab,
 } from "../pages/editor/useTabs";
+import { isTabsHiddenPath } from "../utils/tabsStorage";
 
 // Hoisted tab state so the tab bar can live in the Layout (visible on
 // Dashboard, Settings, Admin, Editor — everywhere protected) and not only
@@ -26,15 +27,6 @@ export interface TabsContextValue extends UseTabsResult {
 
 const TabsContext = createContext<TabsContextValue | null>(null);
 
-/** Routes on which the tab bar should never render. */
-const HIDDEN_ROUTES = [
-  "/login",
-  "/register",
-  "/reset-password",
-  "/reset-password-confirm",
-  "/auth-setup",
-];
-
 export const TabsProvider: React.FC<{ children: ReactNode }> = ({
   children,
 }) => {
@@ -42,7 +34,9 @@ export const TabsProvider: React.FC<{ children: ReactNode }> = ({
   const editorMatch = useMatch("/editor/:id");
   const currentDrawingId = editorMatch?.params?.id;
   const tabsApi = useTabs(currentDrawingId);
-  const visible = !HIDDEN_ROUTES.some((r) => location.pathname.startsWith(r));
+  // Hidden on auth pages AND on `/shared/:id` — a link-share view must never
+  // surface the owner's other open tabs (see isTabsHiddenPath).
+  const visible = !isTabsHiddenPath(location.pathname);
 
   const value = useMemo<TabsContextValue>(
     () => ({ ...tabsApi, currentDrawingId, visible }),

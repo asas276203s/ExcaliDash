@@ -21,6 +21,7 @@ import { useEditorElementTracking } from "./editor/useEditorElementTracking";
 import { useEditorBroadcast } from "./editor/useEditorBroadcast";
 import { useEditorTabs } from "./editor/useEditorTabs";
 import { useBlankCanvasWatchdog } from "./editor/useBlankCanvasWatchdog";
+import { stripTabsFromSearch } from "../utils/tabsStorage";
 import { EditorErrorBoundary } from "../components/EditorErrorBoundary";
 import { DiagnosticsReportButton } from "../components/DiagnosticsReportButton";
 import { diagnostics } from "../lib/diagnostics";
@@ -143,7 +144,9 @@ const EditorInner: React.FC = () => {
   }, [id]);
   const handleSocketAccessDenied = useCallback(() => {
     if (!id || !location.pathname.startsWith("/editor/")) return;
-    navigate(`/shared/${id}${location.search}${location.hash}`, {
+    // Strip the tab-workspace params so the owner's other open drawings don't
+    // ride along into the public shared route.
+    navigate(`/shared/${id}${stripTabsFromSearch(location.search)}${location.hash}`, {
       replace: true,
     });
   }, [id, location.hash, location.pathname, location.search, navigate]);
@@ -422,6 +425,7 @@ const EditorInner: React.FC = () => {
         tabs={tabs}
         activeTabId={activeTabId}
         hasClosedHistory={hasClosedHistory}
+        showTabBar={!location.pathname.startsWith("/shared/")}
         onActivateTab={activateTab}
         onCloseTab={closeTab}
         onReopenLastClosed={reopenLastClosed}

@@ -3,6 +3,7 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { startOidcSignIn } from '../api';
 import { AuthStatusErrorPanel } from './AuthStatusErrorPanel';
+import { stripTabsFromSearch } from '../utils/tabsStorage';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -67,7 +68,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
     if (location.pathname.startsWith("/editor/")) {
       const id = location.pathname.slice("/editor/".length).split("/")[0] || "";
       if (id) {
-        return <Navigate to={`/shared/${id}${location.search}${location.hash}`} replace />;
+        return <Navigate to={`/shared/${id}${stripTabsFromSearch(location.search)}${location.hash}`} replace />;
       }
     }
 

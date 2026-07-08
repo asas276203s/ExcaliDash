@@ -141,6 +141,16 @@ describe("Link Sharing - Public By Drawing ID", () => {
     expect(anonGet.body?.id).toBe(drawing.id);
     expect(anonGet.body?.accessLevel).toBe("view");
 
+    // Privacy: the shared payload must expose ONLY this single drawing — never
+    // the owner's open-tab/workspace state or any list of other drawing ids.
+    expect(anonGet.body).not.toHaveProperty("openTabs");
+    expect(anonGet.body).not.toHaveProperty("tabOrder");
+    expect(anonGet.body).not.toHaveProperty("tabs");
+    expect(anonGet.body?.appState).not.toHaveProperty("openTabs");
+    expect(anonGet.body?.appState).not.toHaveProperty("tabs");
+    // collectionId is nulled for non-owner viewers so owner scoping never leaks.
+    expect(anonGet.body?.collectionId).toBeNull();
+
     const { anonAgent, anonCsrfHeaderName, anonCsrfToken } =
       await createAnonymousAgentWithCsrf();
 

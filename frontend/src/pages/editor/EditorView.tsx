@@ -47,6 +47,7 @@ type EditorViewProps = {
   tabs: EditorTab[];
   activeTabId: string | null;
   hasClosedHistory: boolean;
+  showTabBar: boolean;
   onActivateTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onOpenTabInNewTab: (id: string) => void;
@@ -118,6 +119,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
   tabs,
   activeTabId,
   hasClosedHistory,
+  showTabBar,
   onActivateTab,
   onCloseTab,
   onOpenTabInNewTab,
@@ -244,17 +246,19 @@ export const EditorView: React.FC<EditorViewProps> = ({
         </div>
       </div>
     </header>
-      <TabBar
-        tabs={tabs}
-        activeId={activeTabId}
-        hasClosedHistory={hasClosedHistory}
-        onActivate={onActivateTab}
-        onClose={onCloseTab}
-        onOpenInNewTab={onOpenTabInNewTab}
-        onReopenLastClosed={onReopenLastClosed}
-        onReorderTab={onReorderTab}
-        onNavigateHome={onNavigateHome}
-      />
+      {showTabBar ? (
+        <TabBar
+          tabs={tabs}
+          activeId={activeTabId}
+          hasClosedHistory={hasClosedHistory}
+          onActivate={onActivateTab}
+          onClose={onCloseTab}
+          onOpenInNewTab={onOpenTabInNewTab}
+          onReopenLastClosed={onReopenLastClosed}
+          onReorderTab={onReorderTab}
+          onNavigateHome={onNavigateHome}
+        />
+      ) : null}
     </div>
     <div
       ref={editorContainerRef}

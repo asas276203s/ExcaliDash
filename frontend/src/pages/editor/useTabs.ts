@@ -11,6 +11,8 @@ import {
   readActiveTab,
   writeActiveTab,
   writeOpenTabs,
+  isTabsHiddenPath,
+  stripTabsFromSearch,
   type StoredTab,
 } from "../../utils/tabsStorage";
 
@@ -71,6 +73,26 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
   useEffect(() => {
     if (hasHydratedRef.current) return;
     hasHydratedRef.current = true;
+    // On `/shared/:id` (and auth pages) the tab workspace must not exist: never
+    // ingest `?tabs=` from the URL, since those ids belong to the sharer's other
+    // drawings and would leak into a link-share view.
+    if (isTabsHiddenPath(location.pathname)) {
+      setTabs([]);
+      // Scrub any tab params that rode in on the URL so a shared link can't be
+      // re-forwarded still carrying the owner's other drawing ids.
+      const strippedSearch = stripTabsFromSearch(location.search);
+      if (strippedSearch !== location.search) {
+        navigate(
+          {
+            pathname: location.pathname,
+            search: strippedSearch,
+            hash: location.hash,
+          },
+          { replace: true },
+        );
+      }
+      return;
+    }
     const { tabIds } = parseTabsFromSearch(location.search);
     const storedTabs = readOpenTabs();
     let initial: EditorTab[];
@@ -120,8 +142,11 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
   // React to tabs state changes: persist.
   useEffect(() => {
     if (!hasHydratedRef.current) return;
+    // Never write tab params into a shared/auth URL or clobber the URL there.
+    // localStorage is left untouched so the owner's real workspace survives.
+    if (isTabsHiddenPath(location.pathname)) return;
     syncPersistence(tabs, currentDrawingId || readActiveTab());
-  }, [tabs, currentDrawingId, syncPersistence]);
+  }, [tabs, currentDrawingId, syncPersistence, location.pathname]);
 
   const openTab: UseTabsResult["openTab"] = useCallback(
     (id, opts) => {

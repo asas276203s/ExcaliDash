@@ -116,6 +116,36 @@ export const popClosedTab = (): StoredTab | null => {
   return head;
 };
 
+/**
+ * Route prefixes on which the multi-tab workspace must NEVER be read from the
+ * URL, rendered, or persisted.
+ *
+ * `/shared/:id` is a single-drawing link-share view. The tab list encodes the
+ * ids (and cached names) of the OWNER's other open drawings, so honoring
+ * `?tabs=` or rendering the tab bar there leaks which other drawings exist —
+ * a privacy bug. Auth pages never show a workspace either.
+ */
+export const TABS_HIDDEN_ROUTE_PREFIXES = [
+  "/login",
+  "/register",
+  "/reset-password",
+  "/reset-password-confirm",
+  "/auth-setup",
+  "/shared/",
+  "/shared",
+] as const;
+
+export const isTabsHiddenPath = (pathname: string): boolean =>
+  TABS_HIDDEN_ROUTE_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+
+/**
+ * Remove the tab-workspace params (`tabs`, `active`) from a search string while
+ * preserving any unrelated params. Used when redirecting into the shared route
+ * so the owner's open-tab list never rides along into a link-share URL.
+ */
+export const stripTabsFromSearch = (search: string): string =>
+  buildTabsSearch(search, [], null);
+
 export interface ParsedTabsFromUrl {
   tabIds: string[] | null;
   activeId: string | null;

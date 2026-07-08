@@ -6,6 +6,7 @@ import * as api from "../../api";
 import { diagnostics } from "../../lib/diagnostics";
 import { normalizeServerElements } from "../../utils/normalize-server-elements";
 import { getPersistedAppState, hasRenderableElements } from "./shared";
+import { stripTabsFromSearch } from "../../utils/tabsStorage";
 
 type AccessLevel = "none" | "view" | "edit" | "owner";
 
@@ -229,9 +230,12 @@ export const useEditorSceneLoader = ({
             id &&
             location.pathname.startsWith("/editor/")
           ) {
-            navigate(`/shared/${id}${location.search}${location.hash}`, {
-              replace: true,
-            });
+            navigate(
+              `/shared/${id}${stripTabsFromSearch(location.search)}${location.hash}`,
+              {
+                replace: true,
+              },
+            );
             return;
           }
         }
