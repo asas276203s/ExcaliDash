@@ -174,6 +174,16 @@ export const useEditorCollaboration = ({
   // Timer that flips the pill into Variant C after REMOTE_SYNC_ESCALATE_MS
   // of "still syncing". Cleared as soon as the sync completes (or unmounts).
   const escalateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Distinguishes the FIRST socket connect (initial page load — the scene
+  // loader owns fetching the initial data) from every SUBSEQUENT reconnect
+  // (tab suspend/resume, laptop sleep, mobile network switch). Only reconnects
+  // trigger the catch-up refetch: during the brief disconnect→rejoin window
+  // the server can broadcast a `drawing-server-update` to an empty room
+  // (roomSize:0), permanently losing that update for this client — it never
+  // arrives and nothing back-fills it. On rejoin we refetch once and merge
+  // anything newer than our known version. Reset on every (re)mount so a
+  // drawing switch treats its next connect as an initial connect again.
+  const hasConnectedBeforeRef = useRef(false);
 
   useEffect(() => {
     setSocketMe(me);
@@ -195,6 +205,10 @@ export const useEditorCollaboration = ({
     // useRef persists across mounts in strict-mode double-invocation and
     // during id-driven remounts triggered by the parent's `key={id}`.
     isUnmountingRef.current = false;
+    // Fresh drawing / remount → the next connect is an INITIAL connect again,
+    // so it must NOT fire the reconnect catch-up refetch (scene loader owns
+    // the initial fetch).
+    hasConnectedBeforeRef.current = false;
     const socket = io(getSocketUrl(), {
       path: "/socket.io",
       transports: ["websocket", "polling"],
@@ -252,7 +266,28 @@ export const useEditorCollaboration = ({
       // connect. A reconnect is our strongest signal that the client can
       // reach the server again; give sync a clean slate.
       consecutiveRemoteTimeoutsRef.current = 0;
+      // A reconnect (i.e. NOT the very first connect) means we may have been
+      // dropped from the room while the server broadcast an update to
+      // roomSize:0 — a permanently-lost `drawing-server-update`. Re-join the
+      // room, THEN refetch-and-merge once to catch up on anything newer than
+      // our known version. The initial connect is skipped: the scene loader
+      // already fetched the initial data, so a refetch there is redundant.
+      const isReconnect = hasConnectedBeforeRef.current;
+      hasConnectedBeforeRef.current = true;
       socket.emit("join-room", { drawingId, user: me }, handleJoinAck);
+      if (isReconnect) {
+        diagnostics.log("reconnect-refetch-triggered", {
+          drawingId,
+          knownVersion: currentDrawingVersionRef.current,
+        });
+        // Silent: reconnects fire frequently (tab switches, network blips) and
+        // the sync pill is meant for LIVE in-session remote changes. We cannot
+        // attribute the missed write's origin from a GET (the response echoes
+        // only the requester, never the last writer), so we apply quietly —
+        // consistent with the origin-echo path's same-user silent apply.
+        // Content correctness is the fix here; the pill is not.
+        void fetchAndMergeServerUpdate({ silent: true, source: "reconnect" });
+      }
     });
     socket.on("disconnect", (reason: any) => {
       diagnostics.log(
@@ -265,6 +300,12 @@ export const useEditorCollaboration = ({
     // production socket.connected is false until the first real connect
     // event, at which point the listener above fires.
     if (socket.connected) {
+      // Test/edge path: the socket reports connected synchronously (in
+      // production the first `connect` event drives the initial join via the
+      // handler above). Either way, mark that our initial connect+join has
+      // happened so a later `connect` handler invocation is recognised as a
+      // reconnect and triggers the catch-up refetch.
+      hasConnectedBeforeRef.current = true;
       socket.emit("join-room", { drawingId, user: me }, handleJoinAck);
     }
     const renderLoop = () => {
@@ -521,12 +562,22 @@ export const useEditorCollaboration = ({
     };
     const fetchAndMergeServerUpdate = async (options?: {
       silent?: boolean;
+      /**
+       * Tags the call as the reconnect catch-up refetch (vs the normal
+       * broadcast-driven fetch). Only affects diagnostics: emits the
+       * `reconnect-refetch-applied` / `reconnect-refetch-noop` trace points so
+       * an operator can confirm from the log that a rejoin actually back-filled
+       * (or found nothing new). Does NOT change the fetch/merge/origin-echo
+       * behaviour.
+       */
+      source?: "reconnect";
     }) => {
       // `silent` = the triggering broadcast(s) came from THIS user's other
       // window. We still fetch + merge (the content genuinely changed) but we
       // never light the sync pill, escalate the overlay, or toast — from the
       // user's seat it's their own edit landing.
       const silent = options?.silent ?? false;
+      const source = options?.source;
       if (!drawingId) return;
       if (isUnmountingRef.current) return;
       // F4: once we've given up on the server, skip fresh attempts too. The
@@ -604,6 +655,16 @@ export const useEditorCollaboration = ({
           knownVersion !== null &&
           responseVersion === knownVersion
         ) {
+          if (source === "reconnect") {
+            // Rejoin found nothing we hadn't already applied (common case: the
+            // missed broadcast was this session's own save, whose response had
+            // already advanced our version). No double-apply, no pill.
+            diagnostics.log("reconnect-refetch-noop", {
+              drawingId,
+              serverVersion: responseVersion,
+              knownVersion,
+            });
+          }
           return;
         }
         const hasLocalPendingEdits = () =>
@@ -768,6 +829,16 @@ export const useEditorCollaboration = ({
         lastSyncedElementOrderSigRef.current =
           computeElementOrderSig(mergedElements);
         mergedElements.forEach((el: any) => recordElementVersion(el));
+        if (source === "reconnect") {
+          // Rejoin back-filled a genuinely newer version that was broadcast
+          // (and lost) while we were briefly disconnected. Applied silently.
+          diagnostics.log("reconnect-refetch-applied", {
+            drawingId,
+            serverVersion: responseVersion,
+            knownVersion,
+            mergedCount: mergedElements.length,
+          });
+        }
         if (!silent) toast.success("已從 Server 同步最新內容");
       } catch (err) {
         // BUG-15: distinguish the abort we caused from a real network error.

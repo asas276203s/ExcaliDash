@@ -880,14 +880,18 @@ describe("useEditorCollaboration drawing-server-update", () => {
       expect(getDrawingSpy.mock.calls.length).toBe(
         MAX_CONSECUTIVE_REMOTE_TIMEOUTS,
       );
-      // Now fire the socket "connect" handler → counter resets to 0.
+      // Flip the mock to succeed BEFORE firing connect: a reconnect now also
+      // fires the catch-up refetch (silent), so the fetch it kicks off must
+      // resolve rather than hang — otherwise it would hold the in-flight lock
+      // and block the follow-up broadcast fetch below.
+      shouldTimeout = false;
+      // Now fire the socket "connect" handler → counter resets to 0 (and the
+      // reconnect catch-up refetch runs).
       const connectHandler = socketHandlers.get("connect");
       expect(connectHandler).toBeDefined();
       act(() => {
         connectHandler!();
       });
-      // Also flip the mock to succeed so we exit the timeout regime.
-      shouldTimeout = false;
       emitServerUpdate();
       await act(async () => {
         vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
@@ -1128,5 +1132,169 @@ describe("useEditorCollaboration drawing-server-update", () => {
       });
       expect(toastSuccess).not.toHaveBeenCalled();
     });
+  });
+});
+
+// -------------------------------------------------------------------------
+// Reconnect catch-up refetch.
+//
+// During the brief disconnect→rejoin window a client can be dropped from the
+// `drawing_${id}` room while the server broadcasts a `drawing-server-update`
+// to roomSize:0. That update is permanently lost — the reconnecting client
+// re-joins the room but nothing back-fills the missed write. On reconnect we
+// now refetch once and merge anything newer than our known version.
+//
+// These tests use REAL timers: the reconnect refetch is silent (no debounce,
+// no pill) so there is nothing to advance; the only setTimeout (the fetch
+// abort guard) is cleared in the finally before it can fire.
+describe("useEditorCollaboration reconnect refetch", () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    socketHandlers.clear();
+    fakeSocket.on.mockClear();
+    fakeSocket.off.mockClear();
+    fakeSocket.emit.mockClear();
+    fakeSocket.disconnect.mockClear();
+    fakeSocket.connected = true;
+    toastInfo.mockClear();
+    toastSuccess.mockClear();
+    toastError.mockClear();
+    getDrawingSpy.mockClear();
+    logSpy = vi.spyOn(diagnostics, "log");
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    fakeSocket.connected = true;
+  });
+
+  const fireConnect = () => {
+    const handler = socketHandlers.get("connect");
+    if (!handler) throw new Error("connect handler not registered");
+    handler();
+  };
+  const loggedTypes = () => logSpy.mock.calls.map((c) => c[0] as string);
+
+  it("on reconnect, refetches and merges when the server version is newer", async () => {
+    const props = buildProps();
+    // We already know v90; the missed broadcast advanced the server to v91.
+    props.currentDrawingVersionRef.current = 90;
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [{ id: "e1", version: 2, versionNonce: 5, updated: 100 }],
+      appState: { viewBackgroundColor: "#eef" },
+      files: {},
+      version: 91,
+    });
+    renderHook(() => useEditorCollaboration(props));
+    // Mount performed the initial join (fakeSocket.connected === true), so the
+    // NEXT connect event is a reconnect.
+    getDrawingSpy.mockClear();
+    fireConnect();
+    const updateScene = props.excalidrawAPI.current.updateScene as ReturnType<
+      typeof vi.fn
+    >;
+    await waitFor(() => {
+      expect(updateScene).toHaveBeenCalled();
+    });
+    // Fetched exactly once and back-filled to the newer version.
+    expect(getDrawingSpy).toHaveBeenCalledTimes(1);
+    expect(props.currentDrawingVersionRef.current).toBe(91);
+    expect(loggedTypes()).toContain("reconnect-refetch-triggered");
+    expect(loggedTypes()).toContain("reconnect-refetch-applied");
+    expect(loggedTypes()).not.toContain("reconnect-refetch-noop");
+    // Silent apply — the pill is for live in-session changes, not reconnects.
+    expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("on reconnect, is a no-op when the server version is unchanged", async () => {
+    const props = buildProps();
+    props.currentDrawingVersionRef.current = 91;
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [{ id: "e1" }],
+      appState: {},
+      files: {},
+      version: 91,
+    });
+    renderHook(() => useEditorCollaboration(props));
+    getDrawingSpy.mockClear();
+    fireConnect();
+    // It DID fetch to check the version, then found nothing newer.
+    await waitFor(() => {
+      expect(loggedTypes()).toContain("reconnect-refetch-noop");
+    });
+    expect(getDrawingSpy).toHaveBeenCalledTimes(1);
+    const updateScene = props.excalidrawAPI.current.updateScene as ReturnType<
+      typeof vi.fn
+    >;
+    expect(updateScene).not.toHaveBeenCalled();
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(loggedTypes()).not.toContain("reconnect-refetch-applied");
+  });
+
+  it("does NOT refetch on the initial connect (scene loader owns that)", async () => {
+    // Production first-connect flow: socket is NOT connected at mount, so the
+    // initial join is driven by the first `connect` event, not the sync branch.
+    fakeSocket.connected = false;
+    const props = buildProps();
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [{ id: "e1" }],
+      appState: {},
+      files: {},
+      version: 91,
+    });
+    renderHook(() => useEditorCollaboration(props));
+    getDrawingSpy.mockClear();
+    logSpy.mockClear();
+
+    // First connect handler invocation = INITIAL connect → must NOT refetch.
+    fireConnect();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(loggedTypes()).not.toContain("reconnect-refetch-triggered");
+    expect(getDrawingSpy).not.toHaveBeenCalled();
+
+    // A SECOND connect IS a reconnect → now it refetches (proves the gate).
+    fireConnect();
+    await waitFor(() => {
+      expect(loggedTypes()).toContain("reconnect-refetch-triggered");
+    });
+    expect(getDrawingSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies a same-user (own other window) update silently on reconnect — no pill, no toast", async () => {
+    // The missed broadcast was this user's OTHER window autosaving. Content
+    // genuinely changed (v90 → v91), so we apply it — but silently, matching
+    // the origin-echo path's same-user behaviour: no sync pill, no toast.
+    const props = buildProps({ myUserId: "u1" });
+    props.currentDrawingVersionRef.current = 90;
+    getDrawingImpl = async () => ({
+      id: "d1",
+      elements: [{ id: "e1", version: 3, versionNonce: 7, updated: 300 }],
+      appState: {},
+      files: {},
+      version: 91,
+      requestUserId: "u1",
+    });
+    const { result } = renderHook(() => useEditorCollaboration(props));
+    getDrawingSpy.mockClear();
+    fireConnect();
+    const updateScene = props.excalidrawAPI.current.updateScene as ReturnType<
+      typeof vi.fn
+    >;
+    await waitFor(() => {
+      expect(updateScene).toHaveBeenCalled();
+    });
+    // Content synced.
+    expect(props.currentDrawingVersionRef.current).toBe(91);
+    expect(loggedTypes()).toContain("reconnect-refetch-applied");
+    // Silent: the pill was never lit and no toast fired.
+    expect(result.current.isRemoteSyncing).toBe(false);
+    expect(toastSuccess).not.toHaveBeenCalled();
   });
 });
