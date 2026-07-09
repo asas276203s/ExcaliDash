@@ -13,6 +13,7 @@ import {
   writeOpenTabs,
   isTabsHiddenPath,
   stripTabsFromSearch,
+  mergeStoredTabsWithUrl,
   type StoredTab,
 } from "../../utils/tabsStorage";
 
@@ -54,29 +55,44 @@ const withEnsuredId = (
 /**
  * Multi-tab state for the Editor page.
  *
- * Hydration priority (mount): URL query -> localStorage -> single tab from :id.
- * Every mutation is mirrored to localStorage AND the URL query string.
- * Route navigation (path change) is the way we switch which drawing loads —
- * the tab bar drives navigate() and the current `:id` param drives activeId.
+ * Source of truth: localStorage IS the workspace. The URL `?tabs=` param is an
+ * optional layout mirror that can REORDER or ADD tabs but must never SHRINK the
+ * workspace (see `mergeStoredTabsWithUrl`).
+ *
+ * Hydration runs on mount AND again whenever we return from a "tab-hidden"
+ * route (`/shared`, auth pages). Those routes deliberately empty the in-memory
+ * `tabs` (privacy: the tab bar must not exist there) WITHOUT touching
+ * localStorage — so on the way back we must re-read the workspace from
+ * localStorage instead of persisting the emptied state over it. The persistence
+ * gate below stops that transient empty/collapsed state from ever being written.
  */
 export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => {
   const navigate = useNavigate();
   const location = useLocation();
   const hasHydratedRef = useRef(false);
+  // True while the previous route was tab-hidden (`/shared`, auth). Drives a
+  // re-hydration when we return to a visible route.
+  const wasHiddenRef = useRef(false);
+  // Set by (re)hydration to tell the persistence effect to skip the very next
+  // run: that run still sees the pre-hydration `tabs` value (React commits the
+  // hydration `setTabs` on the following render), so persisting it would write
+  // the stale/collapsed set over localStorage.
+  const skipNextPersistRef = useRef(false);
 
   const [tabs, setTabs] = useState<EditorTab[]>([]);
   const [hasClosedHistory, setHasClosedHistory] = useState<boolean>(
     () => readClosedTabs().length > 0,
   );
 
-  // Hydrate once on mount from URL/localStorage.
+  // Hydrate on mount, and re-hydrate when leaving a tab-hidden route.
   useEffect(() => {
-    if (hasHydratedRef.current) return;
-    hasHydratedRef.current = true;
     // On `/shared/:id` (and auth pages) the tab workspace must not exist: never
     // ingest `?tabs=` from the URL, since those ids belong to the sharer's other
-    // drawings and would leak into a link-share view.
+    // drawings and would leak into a link-share view. localStorage is left
+    // untouched so the owner's real workspace survives the visit.
     if (isTabsHiddenPath(location.pathname)) {
+      wasHiddenRef.current = true;
+      hasHydratedRef.current = true;
       setTabs([]);
       // Scrub any tab params that rode in on the URL so a shared link can't be
       // re-forwarded still carrying the owner's other drawing ids.
@@ -93,20 +109,23 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
       }
       return;
     }
+    const returningFromHidden = wasHiddenRef.current;
+    wasHiddenRef.current = false;
+    // Only hydrate on first mount or when coming back from a hidden route.
+    // Plain editor<->editor navigation keeps the live in-memory workspace.
+    if (hasHydratedRef.current && !returningFromHidden) return;
+    hasHydratedRef.current = true;
     const { tabIds } = parseTabsFromSearch(location.search);
-    const storedTabs = readOpenTabs();
-    let initial: EditorTab[];
-    if (tabIds && tabIds.length > 0) {
-      // Prefer URL-declared order, but re-use cached names if present.
-      const nameById = new Map(storedTabs.map((t) => [t.id, t.name]));
-      initial = tabIds.map((id) => ({ id, name: nameById.get(id) }));
-    } else {
-      initial = storedTabs.map((t) => ({ id: t.id, name: t.name }));
-    }
-    initial = withEnsuredId(initial, currentDrawingId);
+    // localStorage is the source of truth; the URL may only reorder/extend it.
+    const merged = mergeStoredTabsWithUrl(readOpenTabs(), tabIds);
+    const initial = withEnsuredId(
+      merged.map((t) => ({ id: t.id, name: t.name })),
+      currentDrawingId,
+    );
+    skipNextPersistRef.current = true;
     setTabs(initial);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [location.pathname]);
 
   // Keep the current drawing id represented as an open tab.
   useEffect(() => {
@@ -145,6 +164,13 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
     // Never write tab params into a shared/auth URL or clobber the URL there.
     // localStorage is left untouched so the owner's real workspace survives.
     if (isTabsHiddenPath(location.pathname)) return;
+    // Skip the run that still holds the pre-hydration `tabs` value — persisting
+    // it would write a stale/collapsed set over the freshly hydrated workspace.
+    // The subsequent render (with the hydrated tabs) persists the real state.
+    if (skipNextPersistRef.current) {
+      skipNextPersistRef.current = false;
+      return;
+    }
     syncPersistence(tabs, currentDrawingId || readActiveTab());
   }, [tabs, currentDrawingId, syncPersistence, location.pathname]);
 

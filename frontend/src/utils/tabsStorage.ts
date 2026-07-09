@@ -166,6 +166,45 @@ export const parseTabsFromSearch = (search: string): ParsedTabsFromUrl => {
 };
 
 /**
+ * Merge the persisted workspace (localStorage — the source of truth) with the
+ * tab ids declared on the URL `?tabs=` param.
+ *
+ * The URL param is only ever emitted by our own persistence code as a shareable
+ * mirror of the workspace; there is NO curated "share this exact tab layout"
+ * feature (link-sharing uses `/shared/:id`). Therefore the URL must never be
+ * able to SHRINK the workspace — otherwise a stale/partial `?tabs=` (e.g. a
+ * single-tab editor URL) silently drops every other open drawing and the loss
+ * is then written back to localStorage, permanently destroying the workspace.
+ *
+ * Strategy (union): honour the URL's ORDER for the ids it lists, then append
+ * any stored tabs the URL omitted (preserving their stored order). Cached names
+ * from localStorage are reused. The result is never smaller than `stored`.
+ */
+export const mergeStoredTabsWithUrl = (
+  stored: StoredTab[],
+  urlIds: string[] | null,
+): StoredTab[] => {
+  const cleanStored = dedupeById(stored);
+  if (!urlIds || urlIds.length === 0) {
+    return cleanStored;
+  }
+  const nameById = new Map(cleanStored.map((t) => [t.id, t.name]));
+  const seen = new Set<string>();
+  const out: StoredTab[] = [];
+  for (const id of urlIds) {
+    if (!isValidId(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, name: nameById.get(id) });
+  }
+  for (const t of cleanStored) {
+    if (seen.has(t.id)) continue;
+    seen.add(t.id);
+    out.push({ id: t.id, name: t.name });
+  }
+  return out;
+};
+
+/**
  * Build a query-string patch that reflects the given tabs + active id. Merges
  * into an existing search string so unrelated params (e.g. import links) are
  * preserved.

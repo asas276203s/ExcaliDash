@@ -6,6 +6,7 @@ import {
   appendTabToStorage,
   buildTabsSearch,
   isTabsHiddenPath,
+  mergeStoredTabsWithUrl,
   moveTabInStorage,
   parseTabsFromSearch,
   popClosedTab,
@@ -273,5 +274,53 @@ describe("moveTabInStorage", () => {
       { id: "a", name: undefined },
       { id: "b", name: undefined },
     ]);
+  });
+});
+
+describe("mergeStoredTabsWithUrl", () => {
+  it("returns the stored workspace unchanged when the URL declares no tabs", () => {
+    const stored = [{ id: "a", name: "A" }, { id: "b" }];
+    expect(mergeStoredTabsWithUrl(stored, null)).toEqual([
+      { id: "a", name: "A" },
+      { id: "b", name: undefined },
+    ]);
+    expect(mergeStoredTabsWithUrl(stored, [])).toEqual([
+      { id: "a", name: "A" },
+      { id: "b", name: undefined },
+    ]);
+  });
+
+  it("never shrinks the workspace: a partial URL keeps every stored tab", () => {
+    const stored = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    const merged = mergeStoredTabsWithUrl(stored, ["a"]);
+    expect(merged.map((t) => t.id).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("honours URL order and reuses cached names, appending stored-only tabs", () => {
+    const stored = [
+      { id: "a", name: "Alpha" },
+      { id: "b", name: "Beta" },
+      { id: "c", name: "Gamma" },
+    ];
+    const merged = mergeStoredTabsWithUrl(stored, ["c", "a"]);
+    expect(merged).toEqual([
+      { id: "c", name: "Gamma" },
+      { id: "a", name: "Alpha" },
+      { id: "b", name: "Beta" },
+    ]);
+  });
+
+  it("adds URL-only tabs (a richer shared layout) after the URL ids", () => {
+    const stored = [{ id: "a" }];
+    const merged = mergeStoredTabsWithUrl(stored, ["a", "extra"]);
+    expect(merged.map((t) => t.id)).toEqual(["a", "extra"]);
+  });
+
+  it("dedupes ids from both sources", () => {
+    const merged = mergeStoredTabsWithUrl(
+      [{ id: "a" }, { id: "a" }],
+      ["a", "a", "b"],
+    );
+    expect(merged.map((t) => t.id)).toEqual(["a", "b"]);
   });
 });
