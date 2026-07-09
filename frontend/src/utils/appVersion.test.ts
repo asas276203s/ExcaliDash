@@ -75,4 +75,41 @@ describe("appVersionStore", () => {
     ).toBeNull();
     expect(appVersionStore.getState().snoozeUntil).toBeNull();
   });
+
+  describe("recordAssetVersion (frontend-bundle signal)", () => {
+    it("fires hasNewVersion when the served version differs from the baked one", () => {
+      appVersionStore.recordAssetVersion("new-sha", "old-sha");
+      const state = appVersionStore.getState();
+      expect(state.hasNewVersion).toBe(true);
+      expect(state.latestVersion).toBe("new-sha");
+    });
+
+    it("does not fire when served and baked versions match", () => {
+      appVersionStore.recordAssetVersion("same-sha", "same-sha");
+      expect(appVersionStore.getState().hasNewVersion).toBe(false);
+    });
+
+    it("does nothing when either version is missing/blank", () => {
+      appVersionStore.recordAssetVersion(null, "baked");
+      appVersionStore.recordAssetVersion("fetched", null);
+      appVersionStore.recordAssetVersion("", "baked");
+      appVersionStore.recordAssetVersion("  ", "baked");
+      appVersionStore.recordAssetVersion("dev", "baked");
+      expect(appVersionStore.getState().hasNewVersion).toBe(false);
+    });
+
+    it("never regresses the flag once set", () => {
+      appVersionStore.recordAssetVersion("new-sha", "old-sha");
+      appVersionStore.recordAssetVersion("old-sha", "old-sha"); // now matches
+      expect(appVersionStore.getState().hasNewVersion).toBe(true);
+    });
+
+    it("coexists with the header signal without resetting it", () => {
+      appVersionStore.recordVersion("backend-v1"); // boot baseline
+      appVersionStore.recordAssetVersion("fe-new", "fe-old"); // FE deploy
+      expect(appVersionStore.getState().hasNewVersion).toBe(true);
+      appVersionStore.recordVersion("backend-v1"); // same backend, no regress
+      expect(appVersionStore.getState().hasNewVersion).toBe(true);
+    });
+  });
 });

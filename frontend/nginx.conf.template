@@ -91,6 +91,16 @@ http {
             try_files /index.html =404;
         }
 
+        # Frontend build manifest — polled by running tabs to detect a newer
+        # deploy. Must never be cached, or a stale tab keeps seeing its own
+        # version and the update banner never fires.
+        location = /version.json {
+            add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;
+            expires -1;
+            default_type application/json;
+            try_files /version.json =404;
+        }
+
         # Cache static assets
         location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
             expires 1y;

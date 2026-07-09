@@ -1,7 +1,8 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import fs from "fs";
 import path from "path";
+import { execSync } from "child_process";
 
 const versionFilePath = path.resolve(__dirname, "../VERSION");
 let versionFromFile = "0.0.0";
@@ -17,10 +18,65 @@ try {
 
 const appVersion = process.env.VITE_APP_VERSION?.trim() || versionFromFile;
 const buildLabel = process.env.VITE_APP_BUILD_LABEL?.trim() || "local development build";
-const buildHash =
-  process.env.VITE_BUILD_HASH?.trim() ||
-  process.env.ZEABUR_GIT_COMMIT_SHA?.trim() ||
-  "dev";
+
+/**
+ * Resolve a build-unique version string, baked into the bundle AND written to
+ * `dist/version.json`. This is what powers the frontend-bundle update banner:
+ * a running tab periodically fetches `/version.json` and compares its
+ * `version` to the value baked into its own bundle — so ANY new frontend
+ * deploy (even backend-unchanged, VERSION-file-unchanged) is detected.
+ *
+ * Resolution order (first non-empty wins):
+ *  1. git short SHA        — local/CI builds that have a `.git` checkout
+ *  2. CI-provided commit   — Zeabur/GitHub inject the deploy SHA as an env/arg
+ *  3. `build-<timestamp>`  — guaranteed-unique fallback so every build differs
+ *     (Docker build stage copies no `.git`, so this or (2) is what ships)
+ */
+const resolveBuildVersion = (): string => {
+  try {
+    const sha = execSync("git rev-parse --short=12 HEAD", {
+      cwd: __dirname,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    if (sha) return sha;
+  } catch {
+    // no git available (e.g. Docker build stage) — fall through
+  }
+  const ciSha =
+    process.env.VITE_BUILD_HASH?.trim() ||
+    process.env.ZEABUR_GIT_COMMIT_SHA?.trim() ||
+    process.env.SOURCE_COMMIT?.trim() ||
+    process.env.GIT_COMMIT?.trim();
+  if (ciSha) return ciSha.slice(0, 12);
+  return `build-${Date.now()}`;
+};
+
+const buildVersion = resolveBuildVersion();
+// Backward-compat: `__BUILD_HASH__` predates this feature; keep it pointing at
+// the same resolved value so any future diagnostics use stays consistent.
+const buildHash = buildVersion;
+
+/**
+ * Emits `dist/version.json` so a deployed, long-lived tab can poll it and learn
+ * a newer frontend bundle has shipped. Build-only; never runs in dev/test.
+ */
+const versionJsonPlugin = (version: string): Plugin => ({
+  name: "excalidash-version-json",
+  apply: "build",
+  generateBundle() {
+    this.emitFile({
+      type: "asset",
+      fileName: "version.json",
+      source: JSON.stringify(
+        { version, builtAt: new Date().toISOString() },
+        null,
+        2,
+      ),
+    });
+  },
+});
 
 export default defineConfig(({ command }) => {
   const nodeEnv = process.env.NODE_ENV || (command === "build" ? "production" : "development");
@@ -31,7 +87,7 @@ export default defineConfig(({ command }) => {
   };
 
   return {
-    plugins: [react()],
+    plugins: [react(), versionJsonPlugin(buildVersion)],
     build: {
       rollupOptions: {
         output: {
@@ -77,6 +133,7 @@ export default defineConfig(({ command }) => {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
       'import.meta.env.VITE_APP_BUILD_LABEL': JSON.stringify(buildLabel),
       __BUILD_HASH__: JSON.stringify(buildHash),
+      __APP_BUILD_VERSION__: JSON.stringify(buildVersion),
     },
     optimizeDeps: {
       esbuildOptions: {

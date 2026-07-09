@@ -19,6 +19,16 @@ ARG VITE_APP_BUILD_LABEL
 ENV VITE_APP_VERSION=$VITE_APP_VERSION
 ENV VITE_APP_BUILD_LABEL=$VITE_APP_BUILD_LABEL
 
+# Deploy commit SHA — baked into the bundle AND written to dist/version.json so
+# a running tab can detect a newer frontend deploy (see vite.config.ts). No
+# `.git` is copied into this stage, so the build reads the SHA from this env.
+# Zeabur injects ZEABUR_GIT_COMMIT_SHA for git-source builds; if absent the
+# build falls back to a unique build-<timestamp>, which still changes per deploy.
+ARG ZEABUR_GIT_COMMIT_SHA
+ARG VITE_BUILD_HASH
+ENV ZEABUR_GIT_COMMIT_SHA=$ZEABUR_GIT_COMMIT_SHA
+ENV VITE_BUILD_HASH=$VITE_BUILD_HASH
+
 # Build the application
 RUN npm run build
 

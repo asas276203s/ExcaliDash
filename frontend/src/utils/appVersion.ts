@@ -98,6 +98,31 @@ export const appVersionStore = {
     emit();
   },
 
+  /**
+   * Called by the frontend asset poller (see `utils/assetVersionPoll.ts`).
+   * Compares the version served in `/version.json` against the version baked
+   * into the *currently running* bundle. A mismatch means a newer frontend
+   * deploy shipped while this tab kept running the old JS — the exact case the
+   * backend `X-App-Version` header is blind to on frontend-only deploys.
+   *
+   * `baked` is passed in (rather than read from a module global) so the logic
+   * is fully unit-testable without relying on the Vite `define`.
+   */
+  recordAssetVersion: (
+    fetchedValue: string | null | undefined,
+    baked: string | null | undefined,
+  ): void => {
+    const fetched = normalize(fetchedValue);
+    const bakedVersion = normalize(baked);
+    // No baseline (dev/unknown) or no served version → nothing to compare.
+    if (!fetched || !bakedVersion) return;
+    if (fetched === bakedVersion) return;
+    // Never regress the flag; first mismatch is enough to prompt reload.
+    if (state.hasNewVersion) return;
+    state = { ...state, latestVersion: fetched, hasNewVersion: true };
+    emit();
+  },
+
   snoozeForMs: (durationMs: number): void => {
     if (!isBrowser) return;
     const until = Date.now() + Math.max(0, durationMs);
