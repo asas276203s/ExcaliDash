@@ -1,9 +1,9 @@
 import React, { useMemo, useState } from "react";
-import type { NavigateFunction } from "react-router-dom";
 import * as api from "../../api";
 import type { Collection, DrawingSummary } from "../../types";
 import { deleteCachedScene } from "../editor/sceneCache";
 import { clearDashboardListCache } from "./dashboardListCache";
+import type { UseTabsResult } from "../editor/useTabs";
 
 type UseDashboardDrawingActionsParams = {
   drawings: DrawingSummary[];
@@ -15,7 +15,7 @@ type UseDashboardDrawingActionsParams = {
   setTotalCount: React.Dispatch<React.SetStateAction<number>>;
   uploadFiles: (files: File[], collectionId: string | null) => Promise<void>;
   refreshData: () => void;
-  navigate: NavigateFunction;
+  openTab: UseTabsResult["openTab"];
 };
 
 const showTemporaryViewerError = (
@@ -36,7 +36,7 @@ export const useDashboardDrawingActions = ({
   setTotalCount,
   uploadFiles,
   refreshData,
-  navigate,
+  openTab,
 }: UseDashboardDrawingActionsParams) => {
   const [drawingToDelete, setDrawingToDelete] = useState<string | null>(null);
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
@@ -75,7 +75,10 @@ export const useDashboardDrawingActions = ({
         "Untitled Drawing",
         targetCollectionId,
       );
-      navigate(`/editor/${id}`);
+      // Route through openTab (not a raw navigate) so the new tab is added
+      // to in-memory state in the same batch as the route change — same
+      // race described in Dashboard.tsx's onOpenDrawing.
+      openTab(id, { name: "Untitled Drawing", preserveSearch: false });
     } catch (err) {
       console.error(err);
     }

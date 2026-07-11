@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeAll, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { Dashboard } from "./Dashboard";
+import { TabsProvider } from "../context/TabsContext";
 
 const mockCreateDrawing = vi.fn();
 const mockUploadFiles = vi.fn();
@@ -75,9 +76,11 @@ describe("Dashboard - Collection Sharing Viewer Restrictions", () => {
   it("blocks New Drawing for view-only shared collections", () => {
     render(
       <MemoryRouter initialEntries={["/collections?id=shared-col-1"]}>
-        <Routes>
-          <Route path="*" element={<Dashboard />} />
-        </Routes>
+        <TabsProvider>
+          <Routes>
+            <Route path="*" element={<Dashboard />} />
+          </Routes>
+        </TabsProvider>
       </MemoryRouter>,
     );
 
@@ -90,9 +93,11 @@ describe("Dashboard - Collection Sharing Viewer Restrictions", () => {
   it("blocks Import for view-only shared collections", () => {
     render(
       <MemoryRouter initialEntries={["/collections?id=shared-col-1"]}>
-        <Routes>
-          <Route path="*" element={<Dashboard />} />
-        </Routes>
+        <TabsProvider>
+          <Routes>
+            <Route path="*" element={<Dashboard />} />
+          </Routes>
+        </TabsProvider>
       </MemoryRouter>,
     );
 

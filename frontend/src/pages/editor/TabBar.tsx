@@ -230,14 +230,22 @@ export const TabBar: React.FC<TabBarProps> = ({
     resetDragState();
   };
 
-  // Ensure the active tab stays visible when it changes.
+  // Ensure the active tab stays visible when it changes. Also re-run when
+  // `tabs` changes (not just `activeId`): a caller that activates a
+  // brand-new tab can have the route's activeId update one render before
+  // the tab is actually appended to the array (setTabs scheduled from a
+  // useEffect rather than batched with the navigate). Without this, the
+  // querySelector below runs while the tab's DOM node doesn't exist yet,
+  // finds nothing, and — since activeId itself doesn't change again once
+  // the tab is finally in the array — never gets a second chance to scroll
+  // it into view. Keying on `tabs` too gives it that second chance.
   useEffect(() => {
     if (!activeId) return;
     const el = scrollerRef.current?.querySelector<HTMLElement>(
       `[data-tab-id="${CSS.escape(activeId)}"]`,
     );
     el?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
-  }, [activeId]);
+  }, [activeId, tabs]);
 
   const updateShadows = () => {
     const el = scrollerRef.current;

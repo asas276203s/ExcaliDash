@@ -19,12 +19,13 @@ import { useDashboardDrawingActions } from "./dashboard/useDashboardDrawingActio
 import { useDashboardSelection } from "./dashboard/useDashboardSelection";
 import { useDashboardSort } from "./dashboard/useDashboardSort";
 import { displayFontFamily } from "../utils/displayFont";
-import { appendTabToStorage } from "../utils/tabsStorage";
+import { useTabsContext } from "../context/TabsContext";
 const PAGE_SIZE = 24;
 export const Dashboard: React.FC = () => {
   const [searchParams] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const { openTab } = useTabsContext();
   const selectedCollectionId = React.useMemo(() => {
     if (location.pathname === "/") return undefined;
     if (location.pathname === "/collections") {
@@ -140,7 +141,7 @@ export const Dashboard: React.FC = () => {
     setTotalCount,
     uploadFiles,
     refreshData,
-    navigate,
+    openTab,
   });
   const collectionActions = useDashboardCollectionActions({
     selectedCollectionId,
@@ -267,12 +268,25 @@ export const Dashboard: React.FC = () => {
           onOpenDrawing={(id) => {
             // Always append: clicking a drawing from the Dashboard should
             // never clobber the user's existing tab set. If the drawing is
-            // already open in a tab, appendTabToStorage just activates
-            // it; otherwise it adds a new tab. Cmd/Ctrl+click and
-            // regular click have the same "don't lose tabs" semantics.
+            // already open in a tab, openTab just activates it; otherwise
+            // it adds a new tab. Cmd/Ctrl+click and regular click have the
+            // same "don't lose tabs" semantics.
+            //
+            // Route through the TabsContext's openTab (setTabs + navigate in
+            // the same handler, batched by React) rather than a raw
+            // localStorage write + navigate. The old path updated the route
+            // (and therefore activeId) before the in-memory tabs array ever
+            // learned about the new tab — the tab bar's "keep current
+            // drawing represented" effect added it a render late, by which
+            // point the "scroll active tab into view" effect had already
+            // fired against the old array and doesn't run again (activeId
+            // itself didn't change a second time). Net effect: a newly
+            // opened drawing's tab could land off-screen, unfocused.
+            // preserveSearch: false — Dashboard's own location.search (e.g.
+            // `?id=<collectionId>` from a collection filter) is unrelated to
+            // the editor route and must not ride along onto it.
             const drawing = sortedDrawings.find((d) => d.id === id);
-            appendTabToStorage({ id, name: drawing?.name });
-            navigate(`/editor/${id}`);
+            openTab(id, { name: drawing?.name, preserveSearch: false });
           }}
           onMouseDown={actions.handleCardMouseDown}
           onDragStart={actions.handleCardDragStart}

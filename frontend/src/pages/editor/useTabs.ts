@@ -25,7 +25,22 @@ export interface EditorTab {
 export interface UseTabsResult {
   tabs: EditorTab[];
   activeId: string | null;
-  openTab: (id: string, opts?: { activate?: boolean; name?: string }) => void;
+  openTab: (
+    id: string,
+    opts?: {
+      activate?: boolean;
+      name?: string;
+      /**
+       * Whether to carry the CALLER's current `location.search`/`hash` onto
+       * the destination `/editor/:id` URL. Defaults to true (existing
+       * in-editor callers rely on this to preserve the `?tabs=`/`active=`
+       * mirror). Pass `false` when opening from a route whose search params
+       * are unrelated to the editor (e.g. Dashboard's `?id=<collectionId>`
+       * filter) so they don't leak onto the editor URL.
+       */
+      preserveSearch?: boolean;
+    },
+  ) => void;
   closeTab: (id: string) => void;
   activateTab: (id: string) => void;
   updateTabName: (id: string, name: string) => void;
@@ -178,20 +193,43 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
     (id, opts) => {
       if (!id) return;
       const shouldActivate = opts?.activate !== false;
-      setTabs((prev) => {
-        if (prev.some((t) => t.id === id)) {
-          if (opts?.name) {
-            return prev.map((t) => (t.id === id ? { ...t, name: opts.name } : t));
-          }
-          return prev;
-        }
-        return [...prev, { id, name: opts?.name }];
-      });
-      if (shouldActivate) {
-        navigate(`/editor/${id}${location.search}${location.hash}`);
+      const preserveSearch = opts?.preserveSearch !== false;
+      const next = tabs.some((t) => t.id === id)
+        ? opts?.name
+          ? tabs.map((t) => (t.id === id ? { ...t, name: opts.name } : t))
+          : tabs
+        : [...tabs, { id, name: opts?.name }];
+      // Only if this call actually changes the route (not a no-op re-open of
+      // the already-active tab) do we need to worry about the race below.
+      const willChangeRoute = shouldActivate && id !== currentDrawingId;
+
+      if (willChangeRoute) {
+        // Persist + navigate to the FULL destination (pathname AND the
+        // `?tabs=`/`active=` query) ourselves, right here, and tell the
+        // "sync tabs -> localStorage + URL" effect below to skip its next
+        // run (same `skipNextPersistRef` mechanism hydration uses above).
+        //
+        // That effect independently calls navigate() whenever `tabs` or
+        // `currentDrawingId` change — and here we're changing BOTH in the
+        // same tick (setTabs below + this navigate). Two independent
+        // navigate() calls firing together can race: the second can resolve
+        // against a location snapshot that predates the first, silently
+        // reverting the route. Doing the (one, complete) navigation
+        // ourselves and skipping the effect's redundant one avoids ever
+        // creating that race.
+        skipNextPersistRef.current = true;
+        writeOpenTabs(next.map((t) => ({ id: t.id, name: t.name })));
+        writeActiveTab(id);
+        const searchBase = preserveSearch ? location.search : "";
+        const hash = preserveSearch ? location.hash : "";
+        const nextSearch = buildTabsSearch(searchBase, next.map((t) => t.id), id);
+        navigate(`/editor/${id}${nextSearch}${hash}`);
+      }
+      if (next !== tabs) {
+        setTabs(next);
       }
     },
-    [location.hash, location.search, navigate],
+    [tabs, currentDrawingId, location.hash, location.search, navigate],
   );
 
   const closeTab: UseTabsResult["closeTab"] = useCallback(
