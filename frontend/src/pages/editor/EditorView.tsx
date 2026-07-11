@@ -154,7 +154,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
         "h-16 bg-white dark:bg-neutral-900 border-b border-gray-200 dark:border-neutral-800 flex items-center px-4 justify-between",
       )}
     >
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 min-w-0">
         <button
           onClick={onBackClick}
           disabled={isSavingOnLeave}
@@ -183,8 +183,9 @@ export const EditorView: React.FC<EditorViewProps> = ({
           </form>
         ) : (
           <h1
-            className="font-medium text-gray-900 dark:text-white px-2 py-1 hover:bg-gray-100 dark:hover:bg-neutral-800 rounded cursor-text"
+            className="font-medium text-gray-900 dark:text-white px-2 py-1 hover:bg-gray-100 dark:hover:bg-neutral-800 rounded cursor-text truncate min-w-0"
             onDoubleClick={onRenameStart}
+            title={drawingName}
           >
             {drawingName}
           </h1>

@@ -44,3 +44,18 @@ html.dark body {
   font-weight: normal;
   font-style: normal;
 }
+
+/*
+ * Dashboard scroll/first-paint: each card renders a full inline SVG preview
+ * (hundreds of path nodes). With no virtualization, rendering every card's
+ * SVG up front is the dominant first-paint + scroll-jank cost. `content-
+ * visibility: auto` lets the browser skip layout/paint/style for cards that
+ * are off-screen, rendering only what's in (or near) the viewport, and
+ * `contain-intrinsic-size` reserves a stable placeholder box so scroll height
+ * and the scrollbar don't jump. On-screen cards (including hover) are
+ * unaffected.
+ */
+.drawing-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
