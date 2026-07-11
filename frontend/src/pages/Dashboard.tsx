@@ -88,7 +88,9 @@ export const Dashboard: React.FC = () => {
           fetchMore();
         }
       },
-      { threshold: 0.1 },
+      // Preload the next page well before the sentinel reaches the
+      // viewport so infinite scroll doesn't stall on a visible loading gap.
+      { threshold: 0.1, rootMargin: "1000px 0px" },
     );
     if (loaderRef.current) {
       observer.observe(loaderRef.current);

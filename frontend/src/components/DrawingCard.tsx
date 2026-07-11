@@ -82,8 +82,10 @@ export const DrawingCard: React.FC<DrawingCardProps> = ({
           observer.disconnect();
         }
       },
-      // Preload a screen ahead so cards are ready before they scroll in.
-      { rootMargin: "600px 0px" },
+      // Preload well ahead of scroll so thumbnails are already painted before
+      // they reach the viewport, avoiding the "pop-in" cut effect on fast
+      // scroll. ~1.5-2 screens of lookahead on a typical viewport height.
+      { rootMargin: "1000px 0px" },
     );
     observer.observe(el);
     return () => observer.disconnect();
