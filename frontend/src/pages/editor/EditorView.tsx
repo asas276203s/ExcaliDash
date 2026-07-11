@@ -296,12 +296,12 @@ export const EditorView: React.FC<EditorViewProps> = ({
           onChange={onCanvasChange}
           onPointerUpdate={onPointerUpdate}
           onLibraryChange={onLibraryChange}
-          excalidrawAPI={onSetExcalidrawAPI}
+          onExcalidrawAPI={onSetExcalidrawAPI}
           UIOptions={UIOptions}
           viewModeEnabled={!canEdit}
         >
           <MainMenu>
-            <MainMenu.DefaultItems.ToggleTheme />
+            <MainMenu.DefaultItems.ToggleTheme allowSystemTheme={false} />
             <MainMenu.DefaultItems.SaveAsImage />
             <MainMenu.DefaultItems.ClearCanvas />
             <MainMenu.DefaultItems.ChangeCanvasBackground />
