@@ -107,7 +107,7 @@ export const Layout: React.FC<LayoutProps> = ({
   }, [isMobile, location.pathname, location.search]);
 
   return (
-    <div className="h-screen w-full bg-[#F3F4F6] dark:bg-neutral-950 p-2 sm:p-4 transition-colors duration-200 overflow-hidden">
+    <div className="h-screen w-full min-w-0 bg-[#F3F4F6] dark:bg-neutral-950 p-2 sm:p-4 transition-colors duration-200 overflow-hidden">
       {isMobile ? (
         <div className="relative h-full min-w-0">
           <main className="h-full min-w-0 bg-white/40 dark:bg-neutral-900/40 backdrop-blur-sm rounded-2xl border border-white/50 dark:border-neutral-800/50 shadow-sm transition-colors duration-200 overflow-hidden flex flex-col">

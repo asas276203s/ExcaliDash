@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../../api";
 import { useDashboardData } from "./useDashboardData";
+import { clearDashboardListCache } from "./dashboardListCache";
 
 vi.mock("../../api", () => ({
   getDrawings: vi.fn(),
@@ -46,6 +47,9 @@ describe("useDashboardData", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // The list cache is module-level and persists across tests; reset it so
+    // each test starts from a cold (cache-miss) state.
+    clearDashboardListCache();
   });
 
   it("loads drawings and collections on mount", async () => {
@@ -237,5 +241,80 @@ describe("useDashboardData", () => {
     expect(result.current.collections.map((collection) => collection.id)).toEqual([
       "shared-a",
     ]);
+  });
+
+  it("serves the cached first page instantly on a warm mount (no spinner)", async () => {
+    // First (cold) mount populates the cache for this exact view.
+    getDrawingsMock.mockResolvedValueOnce({
+      drawings: [makeDrawing("d1")],
+      totalCount: 1,
+      limit: 24,
+      offset: 0,
+    });
+    getCollectionsMock.mockResolvedValueOnce([makeCollection("c1")]);
+
+    const params = {
+      debouncedSearch: "",
+      selectedCollectionId: "col-A",
+      sortField: "updatedAt" as const,
+      sortDirection: "desc" as const,
+      pageSize: 24,
+    };
+    const first = renderHook(() => useDashboardData(params));
+    await waitFor(() => expect(first.result.current.isLoading).toBe(false));
+    expect(first.result.current.drawings.map((d) => d.id)).toEqual(["d1"]);
+    first.unmount();
+
+    // Warm mount: the revalidation network calls never resolve, so the only way
+    // drawings can be populated (and isLoading false) is the cache being served.
+    getDrawingsMock.mockReturnValueOnce(
+      new Promise(() => {}) as ReturnType<typeof api.getDrawings>,
+    );
+    getCollectionsMock.mockReturnValueOnce(
+      new Promise(() => {}) as ReturnType<typeof api.getCollections>,
+    );
+
+    const second = renderHook(() => useDashboardData(params));
+    await waitFor(() =>
+      expect(second.result.current.drawings.map((d) => d.id)).toEqual(["d1"]),
+    );
+    expect(second.result.current.isLoading).toBe(false);
+    expect(second.result.current.collections.map((c) => c.id)).toEqual(["c1"]);
+  });
+
+  it("re-fetches cold (spinner) after the cache is invalidated", async () => {
+    getDrawingsMock.mockResolvedValueOnce({
+      drawings: [makeDrawing("d1")],
+      totalCount: 1,
+      limit: 24,
+      offset: 0,
+    });
+    getCollectionsMock.mockResolvedValueOnce([]);
+
+    const params = {
+      debouncedSearch: "",
+      selectedCollectionId: "col-B",
+      sortField: "updatedAt" as const,
+      sortDirection: "desc" as const,
+      pageSize: 24,
+    };
+    const first = renderHook(() => useDashboardData(params));
+    await waitFor(() => expect(first.result.current.isLoading).toBe(false));
+    first.unmount();
+
+    // A mutation invalidates the whole cache.
+    clearDashboardListCache();
+
+    // Next mount must be cold again: spinner shows, no stale cached list.
+    getDrawingsMock.mockReturnValueOnce(
+      new Promise(() => {}) as ReturnType<typeof api.getDrawings>,
+    );
+    getCollectionsMock.mockReturnValueOnce(
+      new Promise(() => {}) as ReturnType<typeof api.getCollections>,
+    );
+
+    const second = renderHook(() => useDashboardData(params));
+    await waitFor(() => expect(second.result.current.isLoading).toBe(true));
+    expect(second.result.current.drawings).toEqual([]);
   });
 });

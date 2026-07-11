@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { PenTool, Check, Clock } from "lucide-react";
 import type { DrawingSummary, Collection } from "../types";
 import { formatDistanceToNow } from "date-fns";
@@ -57,8 +57,40 @@ export const DrawingCard: React.FC<DrawingCardProps> = ({
   const [showStorageModal, setShowStorageModal] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+
+  // Lazy preview: only render/generate the (heavy, hundreds-of-path) preview SVG
+  // once the card is in or near the viewport. Off-screen cards show a light
+  // placeholder, keeping first paint + scroll cheap as the drawing count grows.
+  // Falls back to "always visible" where IntersectionObserver is unavailable
+  // (e.g. jsdom under tests) so nothing is hidden there.
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [isNearViewport, setIsNearViewport] = useState<boolean>(
+    () => typeof IntersectionObserver === "undefined",
+  );
+
+  useEffect(() => {
+    if (isNearViewport) return;
+    const el = cardRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setIsNearViewport(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setIsNearViewport(true);
+          observer.disconnect();
+        }
+      },
+      // Preload a screen ahead so cards are ready before they scroll in.
+      { rootMargin: "600px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isNearViewport]);
+
   const { previewSvg, hasEmbeddedImages, buildExportDrawing } =
-    useDrawingPreview(drawing, onPreviewGenerated);
+    useDrawingPreview(drawing, onPreviewGenerated, isNearViewport);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,6 +144,7 @@ export const DrawingCard: React.FC<DrawingCardProps> = ({
   return (
     <>
       <div
+        ref={cardRef}
         id={`drawing-card-${drawing.id}`}
         onContextMenu={handleContextMenu}
         draggable={!isRenaming && !isShared}
@@ -172,7 +205,7 @@ export const DrawingCard: React.FC<DrawingCardProps> = ({
           )}
         >
           <div className="absolute inset-0 opacity-[0.25] bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] [background-size:24px_24px]"></div>
-          {previewSvg ? (
+          {isNearViewport && previewSvg ? (
             <div
               className={clsx(
                 "w-full h-full p-4 sm:p-5 flex items-center justify-center [&>svg]:w-auto [&>svg]:h-auto [&>svg]:max-w-full [&>svg]:max-h-full [&>svg]:drop-shadow-xs transition-transform duration-550",

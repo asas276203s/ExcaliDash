@@ -289,7 +289,7 @@ export const TabBar: React.FC<TabBarProps> = ({
         onDragLeave={handleScrollerDragLeave}
         onDrop={handleScrollerDrop}
         className={clsx(
-          "relative flex items-stretch flex-1 min-w-0 overflow-x-auto scrollbar-none",
+          "relative flex items-stretch flex-1 min-w-0 overflow-x-auto overscroll-x-contain scrollbar-none",
           scrollShadow === "start" &&
             "shadow-[inset_10px_0_8px_-8px_rgba(0,0,0,0.15)]",
           scrollShadow === "end" &&

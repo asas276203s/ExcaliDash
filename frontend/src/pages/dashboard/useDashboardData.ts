@@ -3,6 +3,11 @@ import * as api from "../../api";
 import type { DrawingSortField, SortDirection } from "../../api";
 import type { Collection, DrawingSummary } from "../../types";
 import { isLatestRequest, mergeUniqueDrawings } from "./pagination";
+import {
+  buildDashboardListKey,
+  getCachedDashboardList,
+  setCachedDashboardList,
+} from "./dashboardListCache";
 
 type SelectedCollectionId = string | null | undefined;
 
@@ -35,7 +40,27 @@ export const useDashboardData = ({
 
   const refreshData = useCallback(async () => {
     const requestVersion = ++listRequestVersionRef.current;
-    setIsLoading(true);
+    const cacheKey = buildDashboardListKey({
+      view: selectedCollectionId,
+      search: debouncedSearch,
+      sortField,
+      sortDirection,
+      pageSize,
+    });
+
+    // Stale-while-revalidate: if we have this exact view cached, paint it
+    // instantly (no spinner) and let the network fetch below revalidate it.
+    const cached = getCachedDashboardList(cacheKey);
+    if (cached) {
+      setDrawings(cached.drawings);
+      setTotalCount(cached.totalCount);
+      setCollections(cached.collections);
+      nextOffsetRef.current = cached.drawings.length;
+      setIsLoading(false);
+    } else {
+      setIsLoading(true);
+    }
+
     try {
       const isSharedView = selectedCollectionId === "shared";
       const drawingsPromise = isSharedView
@@ -61,19 +86,37 @@ export const useDashboardData = ({
       if (!isLatestRequest(requestVersion, listRequestVersionRef.current))
         return;
 
+      let freshDrawings: DrawingSummary[] | null = null;
+      let freshTotalCount = 0;
+      let freshCollections: Collection[] | null = null;
+
       if (drawingsResult.status === "fulfilled") {
-        setDrawings(drawingsResult.value.drawings);
-        setTotalCount(drawingsResult.value.totalCount);
-        nextOffsetRef.current = drawingsResult.value.drawings.length;
+        freshDrawings = drawingsResult.value.drawings;
+        freshTotalCount = drawingsResult.value.totalCount;
+        setDrawings(freshDrawings);
+        setTotalCount(freshTotalCount);
+        nextOffsetRef.current = freshDrawings.length;
         onRefreshSuccess?.();
       } else {
         console.error("Failed to fetch drawings:", drawingsResult.reason);
       }
 
       if (collectionsResult.status === "fulfilled") {
-        setCollections(collectionsResult.value);
+        freshCollections = collectionsResult.value;
+        setCollections(freshCollections);
       } else {
         console.error("Failed to fetch collections:", collectionsResult.reason);
+      }
+
+      // Only cache a fully-successful first page so a switch-back can never
+      // serve a half-populated view.
+      if (freshDrawings !== null && freshCollections !== null) {
+        setCachedDashboardList(cacheKey, {
+          drawings: freshDrawings,
+          totalCount: freshTotalCount,
+          collections: freshCollections,
+          cachedAt: Date.now(),
+        });
       }
     } catch (err) {
       console.error("Failed to fetch data:", err);

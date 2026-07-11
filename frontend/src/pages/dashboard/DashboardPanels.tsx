@@ -1,6 +1,6 @@
 import React from "react";
 import clsx from "clsx";
-import { AlertTriangle, Folder, Inbox, Loader2, Trash2 } from "lucide-react";
+import { AlertTriangle, Folder, Inbox, Trash2 } from "lucide-react";
 import { DrawingCard } from "../../components/DrawingCard";
 import type { Collection, DrawingSummary } from "../../types";
 
@@ -142,9 +142,27 @@ export const DrawingsGrid: React.FC<DrawingsGridProps> = ({
   onPreviewGenerated,
 }) => {
   if (isLoading && drawings.length === 0) {
+    // Skeleton grid instead of a lone spinner so the first load reads as
+    // "content arriving" rather than "blank cards" while the (now gzipped)
+    // list payload is still on the wire.
     return (
-      <div className="flex justify-center items-center h-64 text-indigo-600">
-        <Loader2 size={32} className="animate-spin" />
+      <div
+        className="grid gap-3 sm:gap-4 pb-16 sm:pb-24"
+        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}
+        aria-hidden="true"
+      >
+        {Array.from({ length: 8 }).map((_, index) => (
+          <div
+            key={index}
+            className="drawing-card relative flex flex-col bg-white dark:bg-neutral-900 rounded-2xl border-2 border-black dark:border-neutral-700 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] dark:shadow-[2px_2px_0px_0px_rgba(255,255,255,0.2)] overflow-hidden"
+          >
+            <div className="aspect-[16/10] bg-slate-100 dark:bg-neutral-800 border-b-2 border-black dark:border-neutral-700 animate-pulse" />
+            <div className="p-4 sm:p-5 flex flex-col gap-3">
+              <div className="h-4 w-2/3 rounded bg-slate-200 dark:bg-neutral-800 animate-pulse" />
+              <div className="h-3 w-1/3 rounded bg-slate-100 dark:bg-neutral-800/70 animate-pulse" />
+            </div>
+          </div>
+        ))}
       </div>
     );
   }

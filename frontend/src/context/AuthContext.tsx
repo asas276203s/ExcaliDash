@@ -11,6 +11,7 @@ import {
   isAxiosError,
 } from '../api';
 import { clearSceneCache } from '../pages/editor/sceneCache';
+import { clearDashboardListCache } from '../pages/dashboard/dashboardListCache';
 
 interface User {
   id: string;
@@ -248,6 +249,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // Drop any cached scenes so a different user (or a re-login) can never see
     // the previous session's drawing content from the in-memory cache.
     clearSceneCache();
+    clearDashboardListCache();
     localStorage.removeItem(USER_KEY);
     setUser(null);
     setTimeout(() => {

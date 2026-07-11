@@ -15,6 +15,15 @@ body {
   height: 100%;
   margin: 0;
   padding: 0;
+  /*
+   * Global rule: the page body must NEVER scroll horizontally, no matter which
+   * inner element overflows. `overflow-x: clip` (not `hidden`) also blocks
+   * programmatic/scroll-chaining horizontal scroll and, unlike `hidden`, does
+   * not establish a scroll container that could break `position: sticky`
+   * descendants. Any wide content (tab strip, tables) must scroll inside its
+   * own `overflow-x-auto` container instead.
+   */
+  overflow-x: clip;
 }
 
 body {
@@ -47,15 +56,11 @@ html.dark body {
 
 /*
  * Dashboard scroll/first-paint: each card renders a full inline SVG preview
- * (hundreds of path nodes). With no virtualization, rendering every card's
- * SVG up front is the dominant first-paint + scroll-jank cost. `content-
- * visibility: auto` lets the browser skip layout/paint/style for cards that
- * are off-screen, rendering only what's in (or near) the viewport, and
- * `contain-intrinsic-size` reserves a stable placeholder box so scroll height
- * and the scrollbar don't jump. On-screen cards (including hover) are
- * unaffected.
+ * (hundreds of path nodes). Rendering every card's SVG up front is the dominant
+ * first-paint + scroll-jank cost. Instead of the blunt `content-visibility:auto`
+ * (which could leave on-screen cards blank while the browser recomputes
+ * relevance), the preview SVG is now gated behind an IntersectionObserver in
+ * DrawingCard: only cards in/near the viewport render (and generate) their
+ * preview; the rest show a lightweight placeholder with the title. See
+ * `DrawingCard` + `useDrawingPreview(enabled)`.
  */
-.drawing-card {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 320px;
-}

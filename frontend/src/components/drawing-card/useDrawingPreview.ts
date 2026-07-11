@@ -38,6 +38,13 @@ const normalizeImageElementsForPreview = (
 export const useDrawingPreview = (
   drawing: DrawingSummary,
   onPreviewGenerated?: (id: string, preview: string) => void,
+  /**
+   * When false, defer the (expensive) client-side preview generation for
+   * drawings that have no server-supplied preview. Server previews are still
+   * surfaced immediately. Set true once the card is in/near the viewport so
+   * off-screen cards don't each fire a `getDrawing` fetch + SVG export on mount.
+   */
+  enabled: boolean = true,
 ) => {
   const [previewSvg, setPreviewSvg] = useState<string | null>(
     drawing.preview ?? null,
@@ -90,6 +97,8 @@ export const useDrawingPreview = (
       setPreviewSvg(drawing.preview);
       return;
     }
+    // Defer generation until the card is near the viewport.
+    if (!enabled) return;
     const generatePreview = async () => {
       try {
         const data = await ensureFullData();
@@ -127,7 +136,7 @@ export const useDrawingPreview = (
     return () => {
       cancelled = true;
     };
-  }, [drawing.id, drawing.preview, ensureFullData, onPreviewGenerated]);
+  }, [drawing.id, drawing.preview, ensureFullData, onPreviewGenerated, enabled]);
 
   const buildExportDrawing = useCallback(async (): Promise<Drawing> => {
     const data = await ensureFullData();

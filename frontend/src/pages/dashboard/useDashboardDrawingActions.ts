@@ -3,6 +3,7 @@ import type { NavigateFunction } from "react-router-dom";
 import * as api from "../../api";
 import type { Collection, DrawingSummary } from "../../types";
 import { deleteCachedScene } from "../editor/sceneCache";
+import { clearDashboardListCache } from "./dashboardListCache";
 
 type UseDashboardDrawingActionsParams = {
   drawings: DrawingSummary[];
@@ -66,6 +67,7 @@ export const useDashboardDrawingActions = ({
       handleViewerActionError("Viewers can't create new drawings");
       return;
     }
+    clearDashboardListCache();
     try {
       const targetCollectionId =
         selectedCollectionId === undefined ? null : selectedCollectionId;
@@ -87,10 +89,12 @@ export const useDashboardDrawingActions = ({
     }
     const targetCollectionId =
       selectedCollectionId === undefined ? null : selectedCollectionId;
+    clearDashboardListCache();
     uploadFiles(Array.from(files), targetCollectionId).finally(refreshData);
   };
 
   const handleRenameDrawing = async (id: string, name: string) => {
+    clearDashboardListCache();
     setDrawings((current) =>
       current.map((drawing) =>
         drawing.id === id ? { ...drawing, name } : drawing,
@@ -121,6 +125,7 @@ export const useDashboardDrawingActions = ({
       setDrawingToDelete(id);
       return;
     }
+    clearDashboardListCache();
     setDrawings((current) => {
       const next = current.filter((drawing) => drawing.id !== id);
       if (next.length !== current.length) setTotalCount((count) => count - 1);
@@ -145,6 +150,7 @@ export const useDashboardDrawingActions = ({
       await api.deleteDrawing(id);
       // Drop the in-memory scene so a lingering tab can't resurrect it.
       deleteCachedScene(id);
+      clearDashboardListCache();
       setDrawings((current) => {
         const next = current.filter((drawing) => drawing.id !== id);
         if (next.length !== current.length) setTotalCount((count) => count - 1);
@@ -163,6 +169,7 @@ export const useDashboardDrawingActions = ({
 
   const executeBulkMoveToTrash = async () => {
     const ids = Array.from(selectedIds);
+    clearDashboardListCache();
     setDrawings((current) => {
       const next = current.filter((drawing) => !selectedIds.has(drawing.id));
       setTotalCount((count) => count - (current.length - next.length));
@@ -191,6 +198,7 @@ export const useDashboardDrawingActions = ({
     try {
       await Promise.all(ids.map((id) => api.deleteDrawing(id)));
       ids.forEach((id) => deleteCachedScene(id));
+      clearDashboardListCache();
       const toDelete = new Set(ids);
       setDrawings((current) => {
         const next = current.filter((drawing) => !toDelete.has(drawing.id));
@@ -207,6 +215,7 @@ export const useDashboardDrawingActions = ({
   const handleBulkMove = async (collectionId: string | null) => {
     if (selectedIds.size === 0) return;
     const idsToMove = Array.from(selectedIds);
+    clearDashboardListCache();
     moveOutOfCurrentView(
       (drawing) =>
         selectedIds.has(drawing.id) ? { ...drawing, collectionId } : drawing,
@@ -229,6 +238,7 @@ export const useDashboardDrawingActions = ({
 
   const handleDuplicateDrawing = async (id: string) => {
     try {
+      clearDashboardListCache();
       await api.duplicateDrawing(id);
       refreshData();
     } catch (err) {
@@ -238,6 +248,7 @@ export const useDashboardDrawingActions = ({
 
   const handleBulkDuplicate = async () => {
     if (selectedIds.size === 0) return;
+    clearDashboardListCache();
     try {
       await Promise.all(
         Array.from(selectedIds).map((id) => api.duplicateDrawing(id)),
@@ -253,6 +264,7 @@ export const useDashboardDrawingActions = ({
     id: string,
     collectionId: string | null,
   ) => {
+    clearDashboardListCache();
     moveOutOfCurrentView(
       (drawing) => (drawing.id === id ? { ...drawing, collectionId } : drawing),
       (drawing) => {
@@ -276,6 +288,7 @@ export const useDashboardDrawingActions = ({
     event.preventDefault();
     event.stopPropagation();
     if (isSharedView) return;
+    clearDashboardListCache();
     if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
       const files = Array.from(event.dataTransfer.files);
       const libFiles = files.filter((file) =>
