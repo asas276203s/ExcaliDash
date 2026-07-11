@@ -11,11 +11,85 @@ export interface StoredTab {
   name?: string;
 }
 
+/**
+ * Base (legacy, pre-namespacing) storage keys. The live keys are now scoped
+ * per signed-in user — see {@link scopedKey}. These bases are still exported
+ * because they double as the migration source (the old shared workspace).
+ */
 export const OPEN_TABS_KEY = "excalidash.open-tabs";
 export const ACTIVE_TAB_KEY = "excalidash.active-tab";
 export const CLOSED_TABS_KEY = "excalidash.closed-tabs";
 
 const MAX_CLOSED_HISTORY = 20;
+
+// Auth state is persisted by AuthContext under these localStorage keys. We read
+// them (lazily, at call time — never cache) to derive the storage scope. The
+// strings are duplicated here rather than imported to keep tabsStorage free of
+// any React/context dependency.
+const SCOPE_USER_KEY = "excalidash-user";
+const SCOPE_AUTH_ENABLED_KEY = "excalidash-auth-enabled";
+/**
+ * Scope used when authentication is disabled (single-user deployments have no
+ * user object, yet the one operator still deserves a persistent workspace).
+ */
+const LOCAL_SCOPE = "__local__";
+
+/**
+ * Resolve the identity that OWNS the tab workspace right now.
+ *
+ * - A signed-in user → their user id (workspaces are private per account, so a
+ *   second account signing in on the same browser can never see or clobber the
+ *   first's open tabs — same privacy principle as the `/shared` link-leak fix).
+ * - Auth disabled → a fixed local scope (single-user mode still persists).
+ * - Anonymous / signed-out with auth enabled → `null`: read nothing, write
+ *   nothing. A logged-out visitor (or a `/shared/:id` viewer) must not be able
+ *   to read or overwrite any account's workspace.
+ *
+ * Read lazily every call so there is no ordering dependency on when auth state
+ * lands — hydration that races a fresh login always sees the current owner.
+ */
+export const resolveTabsScopeId = (): string | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(SCOPE_USER_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { id?: unknown } | null;
+      const id = parsed?.id;
+      if (typeof id === "string" && id.length > 0) return id;
+    }
+  } catch {
+    /* fall through to the auth-disabled / anonymous checks */
+  }
+  if (window.localStorage.getItem(SCOPE_AUTH_ENABLED_KEY) === "false") {
+    return LOCAL_SCOPE;
+  }
+  return null;
+};
+
+/**
+ * Compute the live, per-user storage key for a base key, or `null` when there
+ * is no owner (anonymous). On the first access for a given owner, a pre-existing
+ * legacy (un-namespaced) value is MOVED under the owner's key — a one-time,
+ * lossless migration. It is a move (copy + delete) rather than a copy so the old
+ * shared value can't subsequently leak to a different account on the browser.
+ */
+const scopedKey = (base: string): string | null => {
+  const scope = resolveTabsScopeId();
+  if (!scope) return null;
+  const key = `${base}:${scope}`;
+  try {
+    if (window.localStorage.getItem(key) === null) {
+      const legacy = window.localStorage.getItem(base);
+      if (legacy !== null) {
+        window.localStorage.setItem(key, legacy);
+        window.localStorage.removeItem(base);
+      }
+    }
+  } catch {
+    /* storage may be unavailable (private mode / quota) — ignore */
+  }
+  return key;
+};
 
 const safeParse = <T>(raw: string | null, fallback: T): T => {
   if (!raw) return fallback;
@@ -43,7 +117,9 @@ const dedupeById = (tabs: StoredTab[]): StoredTab[] => {
 
 export const readOpenTabs = (): StoredTab[] => {
   if (typeof window === "undefined") return [];
-  const raw = window.localStorage.getItem(OPEN_TABS_KEY);
+  const key = scopedKey(OPEN_TABS_KEY);
+  if (!key) return [];
+  const raw = window.localStorage.getItem(key);
   const parsed = safeParse<unknown[]>(raw, []);
   if (!Array.isArray(parsed)) return [];
   const mapped: StoredTab[] = [];
@@ -62,28 +138,36 @@ export const readOpenTabs = (): StoredTab[] => {
 
 export const writeOpenTabs = (tabs: StoredTab[]): void => {
   if (typeof window === "undefined") return;
+  const key = scopedKey(OPEN_TABS_KEY);
+  if (!key) return;
   const clean = dedupeById(tabs);
-  window.localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(clean));
+  window.localStorage.setItem(key, JSON.stringify(clean));
 };
 
 export const readActiveTab = (): string | null => {
   if (typeof window === "undefined") return null;
-  const value = window.localStorage.getItem(ACTIVE_TAB_KEY);
+  const key = scopedKey(ACTIVE_TAB_KEY);
+  if (!key) return null;
+  const value = window.localStorage.getItem(key);
   return isValidId(value) ? value : null;
 };
 
 export const writeActiveTab = (id: string | null): void => {
   if (typeof window === "undefined") return;
+  const key = scopedKey(ACTIVE_TAB_KEY);
+  if (!key) return;
   if (isValidId(id)) {
-    window.localStorage.setItem(ACTIVE_TAB_KEY, id);
+    window.localStorage.setItem(key, id);
   } else {
-    window.localStorage.removeItem(ACTIVE_TAB_KEY);
+    window.localStorage.removeItem(key);
   }
 };
 
 export const readClosedTabs = (): StoredTab[] => {
   if (typeof window === "undefined") return [];
-  const raw = window.localStorage.getItem(CLOSED_TABS_KEY);
+  const key = scopedKey(CLOSED_TABS_KEY);
+  if (!key) return [];
+  const raw = window.localStorage.getItem(key);
   const parsed = safeParse<unknown[]>(raw, []);
   if (!Array.isArray(parsed)) return [];
   const mapped: StoredTab[] = [];
@@ -98,8 +182,10 @@ export const readClosedTabs = (): StoredTab[] => {
 
 export const writeClosedTabs = (tabs: StoredTab[]): void => {
   if (typeof window === "undefined") return;
+  const key = scopedKey(CLOSED_TABS_KEY);
+  if (!key) return;
   const trimmed = tabs.slice(0, MAX_CLOSED_HISTORY);
-  window.localStorage.setItem(CLOSED_TABS_KEY, JSON.stringify(trimmed));
+  window.localStorage.setItem(key, JSON.stringify(trimmed));
 };
 
 export const pushClosedTab = (tab: StoredTab): void => {

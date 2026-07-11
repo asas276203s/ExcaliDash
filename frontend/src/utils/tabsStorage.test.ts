@@ -21,8 +21,18 @@ import {
   writeOpenTabs,
 } from "./tabsStorage";
 
+// Workspaces are scoped per signed-in user, so a user must be present for the
+// storage helpers to read/write anything. Seed one and expose the live scoped
+// keys the assertions below check.
+const TEST_USER_ID = "u1";
+const sk = (base: string) => `${base}:${TEST_USER_ID}`;
+
 beforeEach(() => {
   window.localStorage.clear();
+  window.localStorage.setItem(
+    "excalidash-user",
+    JSON.stringify({ id: TEST_USER_ID }),
+  );
 });
 
 afterEach(() => {
@@ -71,7 +81,7 @@ describe("active tab storage", () => {
     writeActiveTab("abc");
     writeActiveTab(null);
     expect(readActiveTab()).toBeNull();
-    expect(window.localStorage.getItem(ACTIVE_TAB_KEY)).toBeNull();
+    expect(window.localStorage.getItem(sk(ACTIVE_TAB_KEY))).toBeNull();
   });
 });
 
@@ -255,9 +265,9 @@ describe("moveTabInStorage", () => {
 
   it("is a noop when destination equals current index (no rewrite)", () => {
     writeOpenTabs([{ id: "a" }, { id: "b" }, { id: "c" }]);
-    const before = window.localStorage.getItem(OPEN_TABS_KEY);
+    const before = window.localStorage.getItem(sk(OPEN_TABS_KEY));
     moveTabInStorage("b", 1);
-    expect(window.localStorage.getItem(OPEN_TABS_KEY)).toBe(before);
+    expect(window.localStorage.getItem(sk(OPEN_TABS_KEY))).toBe(before);
     expect(readOpenTabs()).toEqual([
       { id: "a", name: undefined },
       { id: "b", name: undefined },
@@ -267,9 +277,9 @@ describe("moveTabInStorage", () => {
 
   it("is a noop when the id does not exist", () => {
     writeOpenTabs([{ id: "a" }, { id: "b" }]);
-    const before = window.localStorage.getItem(OPEN_TABS_KEY);
+    const before = window.localStorage.getItem(sk(OPEN_TABS_KEY));
     moveTabInStorage("missing", 0);
-    expect(window.localStorage.getItem(OPEN_TABS_KEY)).toBe(before);
+    expect(window.localStorage.getItem(sk(OPEN_TABS_KEY))).toBe(before);
     expect(readOpenTabs()).toEqual([
       { id: "a", name: undefined },
       { id: "b", name: undefined },

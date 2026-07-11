@@ -32,6 +32,13 @@ const Harness: React.FC = () => {
 
 beforeEach(() => {
   window.localStorage.clear();
+  // Workspaces are per signed-in user; seed one so the seeded localStorage
+  // workspace is in scope. Seeding the legacy (un-namespaced) key also exercises
+  // the one-time migration into the user's scoped key on first read.
+  window.localStorage.setItem(
+    "excalidash-user",
+    JSON.stringify({ id: "owner-1" }),
+  );
   navRef = null;
   latestTabs = [];
   observedSearch = "";
