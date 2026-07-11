@@ -7,6 +7,7 @@ import { diagnostics } from "../../lib/diagnostics";
 import { normalizeServerElements } from "../../utils/normalize-server-elements";
 import { getPersistedAppState, hasRenderableElements } from "./shared";
 import { stripTabsFromSearch } from "../../utils/tabsStorage";
+import { notifySessionExpired } from "../../lib/sessionExpiry";
 import {
   getCachedScene,
   setCachedScene,
@@ -332,6 +333,23 @@ export const useEditorSceneLoader = ({
             );
             return;
           }
+        }
+        // Session expired (or a private drawing opened without a session).
+        // Don't strand the user on the dead-end "Invalid or expired token"
+        // screen whose "Back to dashboard" button just lands on another
+        // authed view that 401s. Bounce to /login and bring them back to this
+        // drawing once they re-authenticate. `id` is guaranteed here (the
+        // no-id branch returns early above).
+        if (status === 401) {
+          notifySessionExpired(
+            `/editor/${id}${stripTabsFromSearch(location.search)}${location.hash}`,
+          );
+          refs.latestElements.current = [];
+          refs.initialSceneElements.current = [];
+          refs.latestFiles.current = {};
+          setLoadError(null);
+          setInitialData(null);
+          return;
         }
         toast.error(message);
         refs.latestElements.current = [];

@@ -36,7 +36,9 @@ export const Login: React.FC = () => {
   const queryMustReset = searchParams.get('mustReset') === '1';
   const oidcErrorCode = searchParams.get('oidcError');
   const oidcErrorMessage = searchParams.get('oidcErrorMessage');
-  const oidcReturnTo = searchParams.get('returnTo') || '/';
+  const rawReturnTo = searchParams.get('returnTo');
+  const returnTo = rawReturnTo && rawReturnTo.startsWith('/') ? rawReturnTo : '/';
+  const oidcReturnTo = returnTo;
   const mustReset = Boolean(user?.mustResetPassword) || queryMustReset;
   const passwordPolicy = getPasswordPolicy();
 
@@ -68,7 +70,7 @@ export const Login: React.FC = () => {
     }
     if (isAuthenticated) {
       if (mustReset) return;
-      navigate('/', { replace: true });
+      navigate(returnTo, { replace: true });
     }
   }, [
     authEnabled,
@@ -101,7 +103,7 @@ export const Login: React.FC = () => {
         setPassword('');
         return;
       }
-      navigate('/');
+      navigate(returnTo);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to login';
       setError(message);

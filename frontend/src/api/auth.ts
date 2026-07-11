@@ -1,6 +1,7 @@
 import { cachePasswordPolicy, type PasswordPolicyResponse } from "../utils/passwordPolicy";
 import { API_URL, api, axios } from "./client";
 import type { DrawingSortField, SortDirection } from "./drawings";
+import { notifySessionExpired } from "../lib/sessionExpiry";
 
 const USER_KEY = "excalidash-user";
 const AUTH_ENABLED_CACHE_KEY = "excalidash-auth-enabled";
@@ -275,7 +276,12 @@ const redirectToLogin = async () => {
 
   const authEnabled = await getAuthEnabledStatus();
   if (authEnabled === false) return;
-  if (window.location.pathname !== "/login") window.location.href = "/login";
+  if (window.location.pathname === "/login") return;
+  // Prefer a clean React-router redirect (clears in-memory user state and
+  // preserves returnTo). Fall back to a hard navigation only when no
+  // AuthProvider is mounted yet (very early boot).
+  if (notifySessionExpired()) return;
+  window.location.href = "/login";
 };
 
 const refreshAccessToken = async (): Promise<void> => {

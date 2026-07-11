@@ -6,6 +6,7 @@ import { AuthProvider } from './context/AuthContext';
 import { TabsProvider } from './context/TabsContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AppUpdateBanner } from './components/AppUpdateBanner';
+import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { Loader2 } from 'lucide-react';
 
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })));
@@ -29,6 +30,7 @@ function App() {
   return (
     <ThemeProvider>
       <Router>
+        <AppErrorBoundary>
         <AuthProvider>
           <TabsProvider>
           <UploadProvider>
@@ -95,6 +97,7 @@ function App() {
           </UploadProvider>
           </TabsProvider>
         </AuthProvider>
+        </AppErrorBoundary>
       </Router>
     </ThemeProvider>
   );

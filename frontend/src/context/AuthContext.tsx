@@ -12,6 +12,7 @@ import {
 } from '../api';
 import { clearSceneCache } from '../pages/editor/sceneCache';
 import { clearDashboardListCache } from '../pages/dashboard/dashboardListCache';
+import { onSessionExpired } from '../lib/sessionExpiry';
 
 interface User {
   id: string;
@@ -186,6 +187,35 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     loadUser();
   }, [loadUser]);
 
+  // Drop every trace of the current session from memory + caches. Shared by
+  // explicit logout and by the session-expiry recovery path.
+  const clearSession = useCallback(() => {
+    clearSceneCache();
+    clearDashboardListCache();
+    localStorage.removeItem(USER_KEY);
+    setUser(null);
+  }, []);
+
+  // Auth-expiry recovery: the axios interceptor (api/auth.ts) and the editor
+  // scene loader signal here when a 401 could not be refreshed. We clear the
+  // stale in-memory user (so ProtectedRoute stops rendering authenticated views
+  // that immediately re-401) and redirect to /login, remembering where the user
+  // was so they land back there after signing in. Guarded so we never loop on
+  // /login itself or hijack auth-disabled single-user mode.
+  useEffect(() => {
+    const unsubscribe = onSessionExpired((returnTo) => {
+      clearSession();
+      if (authEnabled === false) return;
+      if (window.location.pathname === '/login') return;
+      const target =
+        returnTo && returnTo !== '/'
+          ? `/login?returnTo=${encodeURIComponent(returnTo)}`
+          : '/login';
+      navigate(target, { replace: true });
+    });
+    return unsubscribe;
+  }, [authEnabled, clearSession, navigate]);
+
   const login = async (email: string, password: string) => {
     try {
       if (authEnabled === false) {
@@ -248,10 +278,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     void authLogout().catch(() => undefined);
     // Drop any cached scenes so a different user (or a re-login) can never see
     // the previous session's drawing content from the in-memory cache.
-    clearSceneCache();
-    clearDashboardListCache();
-    localStorage.removeItem(USER_KEY);
-    setUser(null);
+    clearSession();
     setTimeout(() => {
       navigate('/login');
     }, 0);
