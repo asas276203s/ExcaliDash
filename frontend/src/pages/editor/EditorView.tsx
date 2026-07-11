@@ -17,6 +17,7 @@ import {
 import type { UserIdentity } from "../../utils/identity";
 import { UIOptions } from "./shared";
 import { SyncIndicator } from "./SyncIndicator";
+import { FontSizeControl } from "./FontSizeControl";
 import { TabBar } from "./TabBar";
 import type { EditorTab } from "./useTabs";
 
@@ -31,6 +32,7 @@ type EditorViewProps = {
   canEdit: boolean;
   drawingName: string;
   editorContainerRef: React.RefObject<HTMLDivElement>;
+  excalidrawAPIRef: React.MutableRefObject<any>;
   initialData: any;
   isHeaderVisible: boolean;
   isRenaming: boolean;
@@ -103,6 +105,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
   canEdit,
   drawingName,
   editorContainerRef,
+  excalidrawAPIRef,
   initialData,
   isHeaderVisible,
   isRenaming,
@@ -299,6 +302,13 @@ export const EditorView: React.FC<EditorViewProps> = ({
           onExcalidrawAPI={onSetExcalidrawAPI}
           UIOptions={UIOptions}
           viewModeEnabled={!canEdit}
+          renderTopRightUI={(_isMobile: boolean, uiAppState: any) => (
+            <FontSizeControl
+              excalidrawAPIRef={excalidrawAPIRef}
+              appState={uiAppState}
+              canEdit={canEdit}
+            />
+          )}
         >
           <MainMenu>
             <MainMenu.DefaultItems.ToggleTheme allowSystemTheme={false} />

@@ -410,6 +410,7 @@ const EditorInner: React.FC = () => {
         canEdit={canEdit}
         drawingName={drawingName}
         editorContainerRef={editorContainerRef}
+        excalidrawAPIRef={excalidrawAPI}
         initialData={initialData}
         isHeaderVisible={isHeaderVisible}
         isRenaming={isRenaming}
