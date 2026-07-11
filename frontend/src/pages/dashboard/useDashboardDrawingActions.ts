@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import type { NavigateFunction } from "react-router-dom";
 import * as api from "../../api";
 import type { Collection, DrawingSummary } from "../../types";
+import { deleteCachedScene } from "../editor/sceneCache";
 
 type UseDashboardDrawingActionsParams = {
   drawings: DrawingSummary[];
@@ -142,6 +143,8 @@ export const useDashboardDrawingActions = ({
     setDrawingToDelete(null);
     try {
       await api.deleteDrawing(id);
+      // Drop the in-memory scene so a lingering tab can't resurrect it.
+      deleteCachedScene(id);
       setDrawings((current) => {
         const next = current.filter((drawing) => drawing.id !== id);
         if (next.length !== current.length) setTotalCount((count) => count - 1);
@@ -187,6 +190,7 @@ export const useDashboardDrawingActions = ({
     setShowBulkDeleteConfirm(false);
     try {
       await Promise.all(ids.map((id) => api.deleteDrawing(id)));
+      ids.forEach((id) => deleteCachedScene(id));
       const toDelete = new Set(ids);
       setDrawings((current) => {
         const next = current.filter((drawing) => !toDelete.has(drawing.id));

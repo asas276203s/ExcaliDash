@@ -7,6 +7,13 @@ import { diagnostics } from "../../lib/diagnostics";
 import { normalizeServerElements } from "../../utils/normalize-server-elements";
 import { getPersistedAppState, hasRenderableElements } from "./shared";
 import { stripTabsFromSearch } from "../../utils/tabsStorage";
+import {
+  getCachedScene,
+  setCachedScene,
+  updateCachedSceneData,
+  type CachedScene,
+} from "./sceneCache";
+import { createSceneCacheApplier } from "./sceneLoaderCacheApply";
 
 type AccessLevel = "none" | "view" | "edit" | "owner";
 
@@ -36,6 +43,7 @@ type SceneLoaderParams = {
     latestAppState: MutableRefObject<any>;
     isBootstrappingScene: MutableRefObject<boolean>;
     hasHydratedInitialScene: MutableRefObject<boolean>;
+    isSyncing: MutableRefObject<boolean>;
   };
   setAccessLevel: (accessLevel: AccessLevel) => void;
   setDrawingName: (name: string) => void;
@@ -102,12 +110,52 @@ export const useEditorSceneLoader = ({
   useEffect(() => {
     const loadToken = ++activeLoadTokenRef.current;
     const isCurrentLoad = () => activeLoadTokenRef.current === loadToken;
+    // Local teardown flag: set in this effect's cleanup so background work
+    // (revalidate apply, API poll) never touches a torn-down Excalidraw.
+    let cancelled = false;
 
     resetRefs();
-    setIsReady(false);
-    setIsSceneLoading(true);
     setLoadError(null);
-    setInitialData(null);
+
+    const { primeSceneRefs, applyFreshOverCache } = createSceneCacheApplier({
+      refs,
+      recordElementVersion,
+      drawingId: id,
+      isCurrentLoad,
+      isCancelled: () => cancelled,
+    });
+
+    // Warm start: if we have a cached scene for this drawing, render it
+    // instantly (no spinner) and revalidate against the server in the
+    // background below. Strictly keyed by id — see sceneCache.ts invariants.
+    const cached: CachedScene | null = getCachedScene(id);
+    const isWarm = Boolean(cached);
+    if (cached) {
+      const hydratedAppState = { ...cached.appState, collaborators: new Map() };
+      primeSceneRefs(cached.elements, cached.files, cached.version, hydratedAppState);
+      refs.suspiciousBlankLoad.current = false;
+      refs.hasSceneChangesSinceLoad.current = false;
+      setDrawingName(cached.drawingName);
+      setAccessLevel(cached.accessLevel);
+      setLoadError(null);
+      setInitialData({
+        elements: cached.elements,
+        appState: hydratedAppState,
+        files: cached.files,
+        scrollToContent: true,
+        libraryItems: cached.libraryItems,
+      });
+      setIsSceneLoading(false);
+      diagnostics.log("scene-cache-hit", {
+        drawingId: id,
+        elementCount: cached.elements.length,
+        version: cached.version,
+      });
+    } else {
+      setIsReady(false);
+      setIsSceneLoading(true);
+      setInitialData(null);
+    }
 
     const loadData = async () => {
       if (!id) {
@@ -116,7 +164,7 @@ export const useEditorSceneLoader = ({
         setIsSceneLoading(false);
         return;
       }
-      diagnostics.log("scene-load-start", { drawingId: id, loadToken });
+      diagnostics.log("scene-load-start", { drawingId: id, loadToken, warm: isWarm });
       try {
         const libraryItemsPromise = user
           ? api.getLibrary().catch((err) => {
@@ -138,31 +186,41 @@ export const useEditorSceneLoader = ({
           });
           return;
         }
-        setDrawingName(data.name);
-        setAccessLevel(
+        const resolvedAccessLevel =
           data.accessLevel === "view" ||
-            data.accessLevel === "edit" ||
-            data.accessLevel === "owner"
+          data.accessLevel === "edit" ||
+          data.accessLevel === "owner"
             ? data.accessLevel
-            : "owner",
-        );
+            : "owner";
         // Normalize on initial load too: the very first render of an
         // MCP-authored drawing (elements missing `groupIds` etc.) is the
         // "打開 dash 就白屏" path. See normalize-server-elements.ts.
         const elements = normalizeServerElements(data.elements);
         const files = data.files || {};
+        const version = typeof data.version === "number" ? data.version : null;
         const hasPreview =
           typeof data.preview === "string" && data.preview.trim().length > 0;
         const loadedRenderable = hasRenderableElements(elements);
-        refs.suspiciousBlankLoad.current = !loadedRenderable && hasPreview;
-        refs.hasSceneChangesSinceLoad.current = false;
+        const persistedAppState = getPersistedAppState(data.appState || {});
+        // Refresh the cache with server truth for the next switch-back.
+        setCachedScene(id, {
+          version,
+          drawingName: data.name,
+          accessLevel: resolvedAccessLevel,
+          elements,
+          appState: persistedAppState,
+          files,
+          libraryItems,
+          cachedAt: Date.now(),
+        });
         diagnostics.log("scene-load-done", {
           drawingId: id,
           elementCount: elements.length,
           loadedRenderable,
           hasPreview,
-          version: typeof data.version === "number" ? data.version : null,
-          suspiciousBlankLoad: refs.suspiciousBlankLoad.current,
+          version,
+          warm: isWarm,
+          suspiciousBlankLoad: !loadedRenderable && hasPreview,
         });
         if (import.meta.env.DEV) {
           console.log("[Editor] Loaded drawing", {
@@ -170,36 +228,72 @@ export const useEditorSceneLoader = ({
             elementCount: elements.length,
             loadedRenderable,
             hasPreview,
-            version: data.version ?? null,
-            suspiciousBlankLoad: refs.suspiciousBlankLoad.current,
+            version,
+            warm: isWarm,
           });
         }
-        refs.latestElements.current = elements;
-        refs.initialSceneElements.current = elements;
-        refs.latestFiles.current = files;
-        refs.lastSyncedFiles.current = files;
-        refs.lastPersistedFiles.current = files;
-        refs.currentDrawingVersion.current =
-          typeof data.version === "number" ? data.version : null;
-        refs.lastPersistedElements.current = elements;
-        elements.forEach((element: any) => recordElementVersion(element));
-        const persistedAppState = getPersistedAppState(data.appState || {});
-        const hydratedAppState = {
-          ...persistedAppState,
-          collaborators: new Map(),
-        };
-        refs.latestAppState.current = hydratedAppState;
-        setInitialData({
-          elements,
-          appState: hydratedAppState,
-          files,
-          scrollToContent: true,
-          libraryItems,
-        });
+        // Always keep the drawing name / access level fresh even on a warm
+        // start (they're cheap and might have changed server-side).
+        setDrawingName(data.name);
+        setAccessLevel(resolvedAccessLevel);
+        if (isWarm) {
+          // We already rendered the cached scene. Only touch the canvas if the
+          // server has a strictly newer (or non-comparable) version — otherwise
+          // the cached render is already correct, so we no-op to keep the
+          // switch perfectly seamless.
+          const cachedVersion = cached ? cached.version : null;
+          const shouldApply =
+            version === null ||
+            cachedVersion === null ||
+            version > cachedVersion;
+          if (shouldApply) {
+            void applyFreshOverCache(elements, persistedAppState, files, version);
+          } else {
+            diagnostics.log("scene-cache-revalidate-noop", {
+              drawingId: id,
+              version,
+              cachedVersion,
+            });
+          }
+        } else {
+          refs.suspiciousBlankLoad.current = !loadedRenderable && hasPreview;
+          refs.hasSceneChangesSinceLoad.current = false;
+          const hydratedAppState = {
+            ...persistedAppState,
+            collaborators: new Map(),
+          };
+          primeSceneRefs(elements, files, version, hydratedAppState);
+          setInitialData({
+            elements,
+            appState: hydratedAppState,
+            files,
+            scrollToContent: true,
+            libraryItems,
+          });
+        }
       } catch (err) {
         if (!isCurrentLoad()) {
           // Superseded — swallow the error silently; the current run owns
           // any user-facing signalling for its own drawing id.
+          return;
+        }
+        const status = api.isAxiosError(err) ? err.response?.status ?? null : null;
+        // Warm start: the cached scene is already on screen and correct enough
+        // to keep working from. A transient revalidate failure (network blip,
+        // 5xx) must NOT blank it. Two exceptions we still honour because they
+        // mean the cached view is no longer valid: 403 (access revoked -> the
+        // scene loader owns the redirect to /shared) and 404 (drawing deleted).
+        const isAccessOrGone = status === 403 || status === 404;
+        if (isWarm && !isAccessOrGone) {
+          diagnostics.log(
+            "scene-cache-revalidate-error-ignored",
+            {
+              drawingId: id,
+              message: err instanceof Error ? err.message : String(err),
+              status,
+            },
+            "warn",
+          );
           return;
         }
         diagnostics.log(
@@ -207,7 +301,7 @@ export const useEditorSceneLoader = ({
           {
             drawingId: id,
             message: err instanceof Error ? err.message : String(err),
-            status: api.isAxiosError(err) ? err.response?.status ?? null : null,
+            status,
           },
           "error",
         );
@@ -260,6 +354,25 @@ export const useEditorSceneLoader = ({
     };
 
     loadData();
+
+    return () => {
+      // Stop any in-flight background revalidate from touching the (about to be
+      // torn-down) Excalidraw instance.
+      cancelled = true;
+      // Snapshot the live scene the user is leaving into the cache so switching
+      // back restores exactly what they see now — including edits made after
+      // the initial load (which the fetch-time cache write wouldn't have). Only
+      // refreshes an existing entry; a bare unmount never fabricates one (see
+      // updateCachedSceneData). Strictly keyed by this drawing's own id.
+      if (id) {
+        updateCachedSceneData(id, {
+          version: refs.currentDrawingVersion.current,
+          elements: refs.latestElements.current,
+          appState: getPersistedAppState(refs.latestAppState.current || {}),
+          files: refs.latestFiles.current || {},
+        });
+      }
+    };
   }, [
     id,
     location.hash,

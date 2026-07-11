@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorSceneLoader } from "./useEditorSceneLoader";
+import { clearSceneCache } from "./sceneCache";
 
 // Mock the api layer so we can drive the getDrawing promise resolution
 // order ourselves. This is the whole point of the test: prove that the
@@ -43,6 +44,7 @@ const makeRefs = () => ({
   latestAppState: { current: null as any },
   isBootstrappingScene: { current: true },
   hasHydratedInitialScene: { current: false },
+  isSyncing: { current: false },
 });
 
 type Deferred<T> = {
@@ -63,6 +65,9 @@ const deferred = <T,>(): Deferred<T> => {
 describe("useEditorSceneLoader race guard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Isolate the module-level scene cache between tests so a fetch in one
+    // test can't warm-start the next.
+    clearSceneCache();
   });
 
   afterEach(() => {

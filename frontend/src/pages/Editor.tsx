@@ -309,8 +309,9 @@ const EditorInner: React.FC = () => {
       latestAppState: latestAppStateRef,
       isBootstrappingScene,
       hasHydratedInitialScene,
+      isSyncing,
     }),
-    [elementVersionMap],
+    [elementVersionMap, isSyncing],
   );
   useEditorSceneLoader({
     id,

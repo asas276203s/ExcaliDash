@@ -10,6 +10,7 @@ import {
   authRegister,
   isAxiosError,
 } from '../api';
+import { clearSceneCache } from '../pages/editor/sceneCache';
 
 interface User {
   id: string;
@@ -244,6 +245,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const logout = () => {
     void authLogout().catch(() => undefined);
+    // Drop any cached scenes so a different user (or a re-login) can never see
+    // the previous session's drawing content from the in-memory cache.
+    clearSceneCache();
     localStorage.removeItem(USER_KEY);
     setUser(null);
     setTimeout(() => {
