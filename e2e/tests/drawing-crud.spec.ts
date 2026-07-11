@@ -71,7 +71,11 @@ test.describe("Drawing Creation", () => {
     const card = page.locator(`#drawing-card-${drawing.id}`);
     await card.click();
 
-    await page.waitForURL(`/editor/${drawing.id}`);
+    // Opening from the Dashboard now routes through the tabs manager, which
+    // mirrors the open-tab set onto the URL (`?tabs=<id>&active=<id>`). Pin the
+    // pathname to the exact drawing so the assertion stays strict, but tolerate
+    // that query mirror instead of demanding a bare `/editor/<id>`.
+    await page.waitForURL((url) => url.pathname === `/editor/${drawing.id}`);
 
     await page.waitForSelector("[class*='excalidraw'], canvas", { timeout: 15000 });
   });
