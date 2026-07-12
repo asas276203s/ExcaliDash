@@ -153,8 +153,8 @@ export const registerAccountProfileRoutes = (
       if (config.enableRefreshTokenRotation) {
         try {
           await prisma.refreshToken.updateMany({
-            where: { userId: updatedUser.id, revoked: false },
-            data: { revoked: true },
+            where: { userId: updatedUser.id },
+            data: { revoked: true, rotatedAt: null },
           });
         } catch {
           if (process.env.NODE_ENV === "development") {

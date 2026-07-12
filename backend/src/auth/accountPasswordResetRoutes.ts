@@ -158,8 +158,8 @@ export const registerAccountPasswordResetRoutes = (
       if (config.enableRefreshTokenRotation) {
         try {
           await prisma.refreshToken.updateMany({
-            where: { userId: resetToken.userId, revoked: false },
-            data: { revoked: true },
+            where: { userId: resetToken.userId },
+            data: { revoked: true, rotatedAt: null },
           });
         } catch {
           if (process.env.NODE_ENV === "development") {

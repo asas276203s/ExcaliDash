@@ -60,8 +60,8 @@ export const registerAdminUserPasswordRoutes = (deps: RegisterAdminRoutesDeps) =
         });
         try {
           await prisma.refreshToken.updateMany({
-            where: { userId: target.id, revoked: false },
-            data: { revoked: true },
+            where: { userId: target.id },
+            data: { revoked: true, rotatedAt: null },
           });
         } catch {
           if (process.env.NODE_ENV === "development") {
