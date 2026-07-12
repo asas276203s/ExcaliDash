@@ -184,6 +184,9 @@ export const useEditorCollaboration = ({
   // anything newer than our known version. Reset on every (re)mount so a
   // drawing switch treats its next connect as an initial connect again.
   const hasConnectedBeforeRef = useRef(false);
+  // One-shot guard for the silent auth-refresh + reconnect attempt when the
+  // socket handshake ran with an expired access cookie (see "error" handler).
+  const socketAuthRetriedRef = useRef(false);
 
   useEffect(() => {
     setSocketMe(me);
@@ -241,6 +244,9 @@ export const useEditorCollaboration = ({
       };
       socketMeRef.current = next;
       setSocketMe(next);
+      // Successful (authenticated) join: allow a future expiry to get its own
+      // one-shot silent refresh retry.
+      socketAuthRetriedRef.current = false;
       diagnostics.log("socket-join-ack", { drawingId, userId: next.id });
       const lastUsers = lastPresenceUsersRef.current;
       if (lastUsers) {
@@ -349,6 +355,25 @@ export const useEditorCollaboration = ({
         typeof payload?.message === "string" ? payload.message : null;
       console.warn("[Editor] Socket error:", payload);
       if (message === "You do not have access to this drawing") {
+        // A socket that (re)connected AFTER the 15m access cookie expired is
+        // treated as anonymous by the server, so a private drawing answers
+        // join-room with this access-denied error even though the user's
+        // refresh token is still valid. HTTP requests heal via the axios
+        // 401-refresh interceptor, but the socket handshake bypasses axios -
+        // so try one silent refresh + reconnect (the new handshake carries the
+        // renewed cookie) before surfacing a real denial.
+        if (!socketAuthRetriedRef.current) {
+          socketAuthRetriedRef.current = true;
+          diagnostics.log("socket-auth-refresh-retry", { drawingId });
+          void api
+            .authRefresh()
+            .then(() => {
+              socket.disconnect();
+              socket.connect();
+            })
+            .catch(() => onAccessDenied());
+          return;
+        }
         onAccessDenied();
         return;
       }
