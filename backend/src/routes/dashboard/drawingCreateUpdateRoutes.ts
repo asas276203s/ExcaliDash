@@ -7,6 +7,7 @@ import {
   isOwnerAccess,
 } from "../../authz/sharing";
 import { autoShareDrawing } from "../../autoShare";
+import { isTeamSharedMode } from "../../teamSharedMode";
 import { rewritePreviewForS3 } from "../../fileProcessing";
 import {
   getSessionIdFromHeaders,
@@ -124,8 +125,10 @@ export const registerDrawingCreateUpdateRoutes = (
         if (!collection)
           return res.status(404).json({ error: "Collection not found" });
 
-        // If the collection belongs to someone else, check the user has editor access
-        if (collection.userId !== req.user.id) {
+        // If the collection belongs to someone else, check the user has editor access.
+        // TEAM_SHARED_MODE (fork customization, not upstream): every signed-in
+        // user may create drawings in any collection, so skip the share lookup.
+        if (collection.userId !== req.user.id && !isTeamSharedMode()) {
           const share = await prisma.collectionShare.findFirst({
             where: {
               collectionId: targetCollectionId,
@@ -166,7 +169,8 @@ export const registerDrawingCreateUpdateRoutes = (
           appState: JSON.stringify(payload.appState),
           userId: req.user.id,
           collectionId: targetCollectionId,
-          preview: typeof processedPreview === "string" ? processedPreview : null,
+          preview:
+            typeof processedPreview === "string" ? processedPreview : null,
           files: JSON.stringify(processedFiles),
         },
       });
@@ -250,7 +254,11 @@ export const registerDrawingCreateUpdateRoutes = (
         ? payload.elements.length
         : null;
 
-      if (isSceneUpdate && payload.version !== undefined && payload.version !== existingDrawing.version) {
+      if (
+        isSceneUpdate &&
+        payload.version !== undefined &&
+        payload.version !== existingDrawing.version
+      ) {
         void recordServerLog({
           level: "warn",
           type: "drawing-save",
@@ -297,9 +305,14 @@ export const registerDrawingCreateUpdateRoutes = (
       }
       if (payload.preview !== undefined) {
         const processedPreview = processedFilesForUpdate
-          ? rewritePreviewForS3(payload.preview, payload.files ?? {}, processedFilesForUpdate)
+          ? rewritePreviewForS3(
+              payload.preview,
+              payload.files ?? {},
+              processedFilesForUpdate,
+            )
           : payload.preview;
-        data.preview = typeof processedPreview === "string" ? processedPreview : null;
+        data.preview =
+          typeof processedPreview === "string" ? processedPreview : null;
       }
 
       if (payload.collectionId !== undefined) {
@@ -314,8 +327,13 @@ export const registerDrawingCreateUpdateRoutes = (
           (data as Prisma.DrawingUncheckedUpdateInput).collectionId =
             trashCollectionId;
         } else if (payload.collectionId) {
+          // TEAM_SHARED_MODE (fork customization, not upstream): a drawing may
+          // be moved into any collection in the workspace, not just one the
+          // drawing's owner owns.
           const collection = await prisma.collection.findFirst({
-            where: { id: payload.collectionId, userId: ownerUserId },
+            where: isTeamSharedMode()
+              ? { id: payload.collectionId }
+              : { id: payload.collectionId, userId: ownerUserId },
           });
           if (!collection)
             return res.status(404).json({ error: "Collection not found" });
@@ -449,5 +467,4 @@ export const registerDrawingCreateUpdateRoutes = (
       });
     }),
   );
-
 };

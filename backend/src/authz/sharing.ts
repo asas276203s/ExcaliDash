@@ -1,6 +1,7 @@
 import type { PrismaClient } from "../generated/client";
 import crypto from "crypto";
 import { hashTokenForStorage } from "../auth/tokenSecurity";
+import { isTeamSharedMode } from "../teamSharedMode";
 
 export type DrawingPermission = "view" | "edit";
 export type DrawingAccess = "none" | DrawingPermission | "owner";
@@ -127,6 +128,19 @@ export const getDrawingAccess = async (params: {
   const nowMs = (params.now ?? new Date()).getTime();
 
   let baseAccess: DrawingAccess = "none";
+
+  // TEAM_SHARED_MODE (fork customization, not upstream): the whole instance is
+  // one shared team workspace, so any *authenticated* user gets full access to
+  // any drawing that exists. Anonymous visitors fall through to the normal
+  // link-share evaluation below, untouched.
+  if (isTeamSharedMode() && params.principal?.kind === "user") {
+    const drawing = await params.prisma.drawing.findUnique({
+      where: { id: params.drawingId },
+      select: { id: true },
+    });
+    if (!drawing) return "none";
+    return "owner";
+  }
 
   // User-based access (owner or explicit ACL).
   if (params.principal?.kind === "user") {
