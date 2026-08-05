@@ -225,6 +225,7 @@ Backend base variables:
 - `ENABLE_PASSWORD_RESET` (`true` to enable)
 - `ENABLE_REFRESH_TOKEN_ROTATION` (`true`/`false`, default `true`)
 - `ENABLE_AUDIT_LOGGING` (`true`/`false`, default `false`)
+- `TEAM_SHARED_MODE` (`true`/`false`, default `false`) — fork-only: treat the whole instance as one shared team workspace
 - `ENFORCE_HTTPS_REDIRECT` (`true`/`false`, default `true`) — when `FRONTEND_URL` uses `https://`, the backend auto-redirects plain-HTTP requests; set to `false` when the outer gateway already enforces HTTPS to avoid redirect loops
 - `BOOTSTRAP_SETUP_CODE_TTL_MS` (default `900000`)
 - `BOOTSTRAP_SETUP_CODE_MAX_ATTEMPTS` (default `10`)
@@ -273,6 +274,7 @@ E2E variables:
 - `ENABLE_PASSWORD_RESET`: enable/disable password reset flow.
 - `ENABLE_REFRESH_TOKEN_ROTATION`: control refresh-token rotation behavior.
 - `ENABLE_AUDIT_LOGGING`: enable/disable audit event logging.
+- `TEAM_SHARED_MODE` (fork customization, not upstream): when `true`, any authenticated user has full view/edit access to every drawing and collection in the instance — see `backend/src/teamSharedMode.ts`. Default `false` keeps upstream owner + per-row ACL behavior. Does not change anonymous access, link shares, or API-key permissions; trash stays per-user and owner-only destructive endpoints stay owner-only.
 - `ENFORCE_HTTPS_REDIRECT`: disable built-in HTTP→HTTPS redirect when outer gateway handles it (set to `false`; default `true`).
 - `UPDATE_CHECK_OUTBOUND`: disable outbound version check traffic.
 - `DISABLE_ONBOARDING_GATE`: bypass first-run onboarding guard (not recommended in production).

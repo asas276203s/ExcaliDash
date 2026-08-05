@@ -2,6 +2,10 @@ import express from "express";
 import { Prisma } from "../../generated/client";
 import { normalizeDrawingPermission } from "../../authz/sharing";
 import { getUserTrashCollectionId, toPublicTrashCollectionId } from "./trash";
+import {
+  isTeamSharedMode,
+  teamSharedDrawingAccessClauses,
+} from "../../teamSharedMode";
 import { SortDirection, SortField } from "./types";
 import type { DrawingRouteContext } from "./drawingRouteContext";
 
@@ -44,15 +48,22 @@ export const registerDrawingListRoutes = (
       // drawings from the top-level list would defeat the feature. Access
       // = owner OR explicit DrawingPermission OR the drawing sits inside a
       // collection the caller has a CollectionShare on.
-      const accessClauses: Prisma.DrawingWhereInput[] = [
-        { userId: req.user.id },
-        { permissions: { some: { granteeUserId: req.user.id } } },
-        {
-          collection: {
-            shares: { some: { granteeUserId: req.user.id } },
-          },
-        },
-      ];
+      //
+      // TEAM_SHARED_MODE (fork customization, not upstream): in a shared team
+      // instance every authenticated user sees every drawing, including ones
+      // created before their account existed. Other users' trash stays hidden
+      // — trash is still per-user (`trash:<userId>`).
+      const accessClauses: Prisma.DrawingWhereInput[] = isTeamSharedMode()
+        ? teamSharedDrawingAccessClauses(req.user.id, trashCollectionId)
+        : [
+            { userId: req.user.id },
+            { permissions: { some: { granteeUserId: req.user.id } } },
+            {
+              collection: {
+                shares: { some: { granteeUserId: req.user.id } },
+              },
+            },
+          ];
       const where: Prisma.DrawingWhereInput = { OR: accessClauses };
       const searchTerm =
         typeof search === "string" && search.trim().length > 0
@@ -80,9 +91,11 @@ export const registerDrawingListRoutes = (
             return res.status(404).json({ error: "Collection not found" });
           }
 
-          // Check if user is owner or has a share entry
+          // Check if user is owner or has a share entry.
+          // TEAM_SHARED_MODE (fork customization, not upstream): any signed-in
+          // user may browse any collection, so skip the share lookup.
           const isOwner = collection.userId === req.user.id;
-          if (!isOwner) {
+          if (!isOwner && !isTeamSharedMode()) {
             const share = await prisma.collectionShare.findFirst({
               where: {
                 collectionId: normalizedCollectionId,
@@ -156,7 +169,8 @@ export const registerDrawingListRoutes = (
           includeData: shouldIncludeData,
           sortField: parsedSortField,
           sortDirection: parsedSortDirection,
-        }) + `:${parsedLimit}:${parsedOffset}:preview=${shouldIncludePreview ? "1" : "0"}`;
+        }) +
+        `:${parsedLimit}:${parsedOffset}:preview=${shouldIncludePreview ? "1" : "0"}`;
 
       const cachedBody = getCachedDrawingsBody(cacheKey);
       if (cachedBody) {
@@ -235,8 +249,15 @@ export const registerDrawingListRoutes = (
     asyncHandler(async (req, res) => {
       if (!req.user) return res.status(401).json({ error: "Unauthorized" });
 
-      const { search, includeData, includePreview, limit, offset, sortField, sortDirection } =
-        req.query;
+      const {
+        search,
+        includeData,
+        includePreview,
+        limit,
+        offset,
+        sortField,
+        sortDirection,
+      } = req.query;
       const searchTerm =
         typeof search === "string" && search.trim().length > 0
           ? search.trim()
@@ -375,5 +396,4 @@ export const registerDrawingListRoutes = (
       });
     }),
   );
-
 };

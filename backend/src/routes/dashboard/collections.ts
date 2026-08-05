@@ -2,6 +2,7 @@ import express from "express";
 import { DashboardRouteDeps } from "./types";
 import { getUserTrashCollectionId, isTrashCollectionId } from "./trash";
 import { autoShareCollection } from "../../autoShare";
+import { listCollectionsForUser } from "./collectionList";
 
 export const registerCollectionRoutes = (
   app: express.Express,
@@ -28,64 +29,12 @@ export const registerCollectionRoutes = (
       const trashCollectionId = getUserTrashCollectionId(req.user.id);
       await ensureTrashCollection(prisma, req.user.id);
 
-      const rawCollections = await prisma.collection.findMany({
-        where: { userId: req.user.id },
-        orderBy: { createdAt: "desc" },
-      });
-      const hasInternalTrash = rawCollections.some(
-        (c) => c.id === trashCollectionId,
+      const collections = await listCollectionsForUser(
+        prisma,
+        req.user.id,
+        trashCollectionId,
       );
-      const shareCountMap = await prisma.collectionShare.groupBy({
-        by: ["collectionId"],
-        where: {
-          collectionId: {
-            in: rawCollections.map((c) => c.id),
-          },
-        },
-        _count: { collectionId: true },
-      });
-      const sharedCollectionIds = new Set(
-        shareCountMap.map((s) => s.collectionId),
-      );
-
-      const ownedCollections = rawCollections
-        .filter((c) => !(hasInternalTrash && c.id === "trash"))
-        .map((c) =>
-          c.id === trashCollectionId
-            ? {
-                ...c,
-                id: "trash",
-                name: "Trash",
-                sharedRole: null,
-                isOwner: true,
-                isShared: false,
-              }
-            : {
-                ...c,
-                sharedRole: null,
-                isOwner: true,
-                isShared: sharedCollectionIds.has(c.id),
-              },
-        );
-
-      // Collections shared with this user by others
-      const sharedEntries = await prisma.collectionShare.findMany({
-        where: { granteeUserId: req.user.id },
-        include: {
-          collection: {
-            include: {
-              user: { select: { id: true, name: true, email: true } },
-            },
-          },
-        },
-      });
-      const sharedCollections = sharedEntries.map((s) => ({
-        ...s.collection,
-        sharedRole: s.role,
-        isOwner: false,
-      }));
-
-      return res.json([...ownedCollections, ...sharedCollections]);
+      return res.json(collections);
     }),
   );
 
