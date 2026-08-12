@@ -9,6 +9,14 @@ import {
 import { SortDirection, SortField } from "./types";
 import type { DrawingRouteContext } from "./drawingRouteContext";
 
+/**
+ * Upper bound on `?ids=` entries per request. The caller is the editor tab bar,
+ * which asks for the ids currently in its workspace — a couple of dozen at
+ * most. Capping keeps a hand-crafted query from turning into an unbounded
+ * `IN (...)`.
+ */
+const MAX_IDS_FILTER = 100;
+
 export const registerDrawingListRoutes = (
   app: express.Express,
   context: DrawingRouteContext,
@@ -41,6 +49,7 @@ export const registerDrawingListRoutes = (
         offset,
         sortField,
         sortDirection,
+        ids,
       } = req.query;
       // "All Drawings" (and every unconstrained list) shows everything the
       // caller can access, not only what they own. Auto-share turns the
@@ -72,6 +81,27 @@ export const registerDrawingListRoutes = (
 
       if (searchTerm) {
         where.name = { contains: searchTerm };
+      }
+
+      // `?ids=a,b,c` — fetch metadata for a known set of drawings in one call.
+      // The editor tab bar uses it to back-fill names for tabs restored from
+      // localStorage that were never opened this session (otherwise they render
+      // as a truncated uuid). ANDs with the access clauses above, so an id the
+      // caller cannot see is simply absent from the response rather than an
+      // error — the tab keeps its uuid fallback and nothing leaks.
+      const idFilter =
+        typeof ids === "string" && ids.trim().length > 0
+          ? Array.from(
+              new Set(
+                ids
+                  .split(",")
+                  .map((value) => value.trim())
+                  .filter((value) => value.length > 0 && value.length <= 64),
+              ),
+            ).slice(0, MAX_IDS_FILTER)
+          : undefined;
+      if (idFilter && idFilter.length > 0) {
+        where.id = { in: idFilter };
       }
 
       let collectionFilterKey = "default";
@@ -170,7 +200,10 @@ export const registerDrawingListRoutes = (
           sortField: parsedSortField,
           sortDirection: parsedSortDirection,
         }) +
-        `:${parsedLimit}:${parsedOffset}:preview=${shouldIncludePreview ? "1" : "0"}`;
+        `:${parsedLimit}:${parsedOffset}:preview=${shouldIncludePreview ? "1" : "0"}` +
+        // Without this an `?ids=` request and an unfiltered one share a key and
+        // would serve each other's cached body.
+        `:ids=${idFilter ? idFilter.join(",") : ""}`;
 
       const cachedBody = getCachedDrawingsBody(cacheKey);
       if (cachedBody) {
