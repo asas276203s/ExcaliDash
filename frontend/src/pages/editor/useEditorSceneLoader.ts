@@ -80,6 +80,21 @@ export const useEditorSceneLoader = ({
   setLoadError,
   recordElementVersion,
 }: SceneLoaderParams) => {
+  // `?tabs=` is a layout mirror for the tab bar (localStorage is the real
+  // workspace) and says nothing about WHICH scene to load — note both redirects
+  // below already strip it before navigating.
+  //
+  // Depending on the raw `location.search` therefore made every tab mutation
+  // reload the scene: opening/closing/switching a tab, or merely back-filling a
+  // cached tab name, calls useTabs' syncPersistence(), which rewrites `?tabs=`
+  // via navigate(). That changed `location.search`, re-ran this effect, and the
+  // re-run sets `initialData` to null + `isSceneLoading` to true — the
+  // "Loading drawing..." flash on every small action.
+  //
+  // Depend on the tabs-free search instead: a plain string, so it only changes
+  // when a query param that actually affects loading changes.
+  const searchWithoutTabs = stripTabsFromSearch(location.search);
+
   const resetRefs = useCallback(() => {
     refs.isBootstrappingScene.current = true;
     refs.hasHydratedInitialScene.current = false;
@@ -326,7 +341,7 @@ export const useEditorSceneLoader = ({
             location.pathname.startsWith("/editor/")
           ) {
             navigate(
-              `/shared/${id}${stripTabsFromSearch(location.search)}${location.hash}`,
+              `/shared/${id}${searchWithoutTabs}${location.hash}`,
               {
                 replace: true,
               },
@@ -342,7 +357,7 @@ export const useEditorSceneLoader = ({
         // no-id branch returns early above).
         if (status === 401) {
           notifySessionExpired(
-            `/editor/${id}${stripTabsFromSearch(location.search)}${location.hash}`,
+            `/editor/${id}${searchWithoutTabs}${location.hash}`,
           );
           refs.latestElements.current = [];
           refs.initialSceneElements.current = [];
@@ -395,7 +410,7 @@ export const useEditorSceneLoader = ({
     id,
     location.hash,
     location.pathname,
-    location.search,
+    searchWithoutTabs,
     navigate,
     recordElementVersion,
     refs,
