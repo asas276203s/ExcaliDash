@@ -83,6 +83,28 @@ const buildDrawingParams = (
   return params;
 };
 
+/**
+ * Metadata (id + name + version + timestamps, no elements) for a known set of
+ * drawing ids, in one request.
+ *
+ * The editor tab bar uses this to label tabs restored from localStorage that
+ * were never opened this session — without it they render as a truncated uuid.
+ * Ids the caller cannot access are omitted by the server rather than erroring,
+ * so those tabs simply keep the uuid fallback.
+ */
+export async function getDrawingSummariesByIds(
+  ids: string[],
+  options?: { signal?: AbortSignal },
+): Promise<DrawingSummary[]> {
+  const unique = Array.from(new Set(ids.filter((id) => id && id.length > 0)));
+  if (unique.length === 0) return [];
+  const response = await api.get<PaginatedDrawings<DrawingSummary>>("/drawings", {
+    params: { ids: unique.join(","), limit: unique.length },
+    signal: options?.signal,
+  });
+  return response.data.drawings.map(deserializeDrawingSummary);
+}
+
 export function getDrawings(
   search?: string,
   collectionId?: string | null,
