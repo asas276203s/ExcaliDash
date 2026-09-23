@@ -2,6 +2,8 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import { TabBar } from "../pages/editor/TabBar";
 import { useTabsContext } from "../context/TabsContext";
+import { getRememberedDashboardView } from "../utils/lastDashboardView";
+
 
 // Persistent tab bar rendered above the main content area of Layout so the
 // user's open drawings stay visible on Dashboard / Settings / Admin /
@@ -38,7 +40,7 @@ export const LayoutTabBar: React.FC = () => {
         onClose={closeTab}
         onOpenInNewTab={(id) => activateTab(id)}
         onReopenLastClosed={reopenLastClosed}
-        onNavigateHome={() => navigate("/")}
+        onNavigateHome={() => navigate(getRememberedDashboardView())}
         onReorderTab={moveTab}
       />
     </div>

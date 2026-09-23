@@ -19,6 +19,8 @@ import { useDashboardDrawingActions } from "./dashboard/useDashboardDrawingActio
 import { useDashboardSelection } from "./dashboard/useDashboardSelection";
 import { useDashboardSort } from "./dashboard/useDashboardSort";
 import { displayFontFamily } from "../utils/displayFont";
+import { rememberDashboardView } from "../utils/lastDashboardView";
+
 import { useTabsContext } from "../context/TabsContext";
 const PAGE_SIZE = 24;
 export const Dashboard: React.FC = () => {
@@ -35,6 +37,9 @@ export const Dashboard: React.FC = () => {
     }
     return undefined;
   }, [location.pathname, searchParams]);
+  React.useEffect(() => {
+    rememberDashboardView(location.pathname, location.search);
+  }, [location.pathname, location.search]);
   const setSelectedCollectionId = (id: string | null | undefined) => {
     if (id === undefined) {
       navigate("/");

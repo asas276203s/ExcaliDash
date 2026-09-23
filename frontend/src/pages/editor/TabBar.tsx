@@ -241,10 +241,28 @@ export const TabBar: React.FC<TabBarProps> = ({
   // it into view. Keying on `tabs` too gives it that second chance.
   useEffect(() => {
     if (!activeId) return;
-    const el = scrollerRef.current?.querySelector<HTMLElement>(
+    const scroller = scrollerRef.current;
+    const el = scroller?.querySelector<HTMLElement>(
       `[data-tab-id="${CSS.escape(activeId)}"]`,
     );
-    el?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    if (!scroller || !el) return;
+    // `inline: "nearest"` parks the tab against whichever edge it entered
+    // from, so walking rightwards through tabs leaves the active one pinned
+    // to the right edge with no following context. Centre it instead — but
+    // only when it isn't already fully on screen, otherwise every activation
+    // would yank a perfectly visible bar sideways.
+    const scrollerRect = scroller.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    // A zero-width rect means we can't measure yet (not laid out, or a
+    // non-layout environment). Treat that as "don't know" and scroll rather
+    // than silently skipping the only chance to bring the tab into view.
+    const measurable = scrollerRect.width > 0 && elRect.width > 0;
+    const fullyVisible =
+      measurable &&
+      elRect.left >= scrollerRect.left &&
+      elRect.right <= scrollerRect.right;
+    if (fullyVisible) return;
+    el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
   }, [activeId, tabs]);
 
   const updateShadows = () => {

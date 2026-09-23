@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { getRememberedDashboardView } from "../../utils/lastDashboardView";
 import {
   applyTabMove,
   buildTabsSearch,
@@ -81,6 +82,9 @@ const withEnsuredId = (
  * localStorage instead of persisting the emptied state over it. The persistence
  * gate below stops that transient empty/collapsed state from ever being written.
  */
+const HOME_VIEW = "__home__";
+const MAX_VISIT_HISTORY = 20;
+
 export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -93,6 +97,11 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
   // hydration `setTabs` on the following render), so persisting it would write
   // the stale/collapsed set over localStorage.
   const skipNextPersistRef = useRef(false);
+  // Most-recently-visited views, newest first. Closing the active tab should
+  // return to wherever the user actually came from, not to whatever happens to
+  // sit next to it in the bar. HOME_VIEW is a member like any tab, so closing
+  // a drawing opened from the dashboard goes back to the dashboard.
+  const visitHistoryRef = useRef<string[]>([]);
 
   const [tabs, setTabs] = useState<EditorTab[]>([]);
   const [hasClosedHistory, setHasClosedHistory] = useState<boolean>(
@@ -240,14 +249,25 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
         pushClosedTab({ id: closing.id, name: closing.name });
         setHasClosedHistory(true);
         const remaining = prev.filter((t) => t.id !== id);
-        // If we're closing the active tab, navigate to a neighbour.
         if (currentDrawingId === id) {
-          const index = prev.findIndex((t) => t.id === id);
-          const nextTab = remaining[index] || remaining[index - 1] || null;
-          if (nextTab) {
-            navigate(`/editor/${nextTab.id}`);
+          const survives = (view: string) =>
+            view === HOME_VIEW || remaining.some((t) => t.id === view);
+          const previousView = visitHistoryRef.current
+            .filter((view) => view !== id)
+            .find(survives);
+          visitHistoryRef.current = visitHistoryRef.current.filter(
+            (view) => view !== id,
+          );
+          if (previousView && previousView !== HOME_VIEW) {
+            navigate(`/editor/${previousView}`);
+          } else if (previousView === HOME_VIEW || remaining.length === 0) {
+            navigate(getRememberedDashboardView());
           } else {
-            navigate(`/`);
+            // No history to fall back on (a restored workspace, say) — keep
+            // the old neighbour behaviour rather than kicking the user out.
+            const index = prev.findIndex((t) => t.id === id);
+            const nextTab = remaining[index] || remaining[index - 1] || null;
+            navigate(nextTab ? `/editor/${nextTab.id}` : getRememberedDashboardView());
           }
         }
         return remaining;
@@ -255,6 +275,16 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
     },
     [currentDrawingId, navigate],
   );
+
+  useEffect(() => {
+    const view = currentDrawingId || HOME_VIEW;
+    const prev = visitHistoryRef.current;
+    if (prev[0] === view) return;
+    visitHistoryRef.current = [view, ...prev.filter((v) => v !== view)].slice(
+      0,
+      MAX_VISIT_HISTORY,
+    );
+  }, [currentDrawingId]);
 
   const activateTab: UseTabsResult["activateTab"] = useCallback(
     (id) => {

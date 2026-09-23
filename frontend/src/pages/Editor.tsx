@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { getRememberedDashboardView } from "../utils/lastDashboardView";
+
 import { getInitialLangCode } from "../components/LanguageSelector";
 import type { UserIdentity } from "../utils/identity";
 import { useAuth } from "../context/AuthContext";
@@ -438,7 +440,7 @@ const EditorInner: React.FC = () => {
         onCanvasDropCapture={handleCanvasDropCapture}
         onExportClick={handleExportClick}
         onLibraryChange={handleLibraryChange}
-        onNavigateHome={() => navigate("/")}
+        onNavigateHome={() => navigate(getRememberedDashboardView())}
         onNewNameChange={setNewName}
         onPointerUpdate={onPointerUpdate}
         onRenameBlur={() => setIsRenaming(false)}

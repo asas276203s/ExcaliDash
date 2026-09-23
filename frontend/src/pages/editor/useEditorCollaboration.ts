@@ -74,6 +74,17 @@ export const MAX_CONSECUTIVE_REMOTE_TIMEOUTS = 3;
  * to the centred backdrop overlay (Variant C). Meant to signal "this is
  * taking a moment, hold on".
  */
+/**
+ * Grace period before the sync pill is allowed to appear at all.
+ *
+ * A remote fetch+merge normally lands in well under this, so showing the pill
+ * the instant a broadcast arrives meant that while a peer was drawing the
+ * pill flashed on and off continuously — one flash per stroke. The work still
+ * happens; it just stops being announced unless it is slow enough that the
+ * user would otherwise wonder what the canvas is doing.
+ */
+export const REMOTE_SYNC_SHOW_DELAY_MS = 350;
+
 export const REMOTE_SYNC_ESCALATE_MS = 400;
 
 /**
@@ -173,6 +184,7 @@ export const useEditorCollaboration = ({
   const isUnmountingRef = useRef(false);
   // Timer that flips the pill into Variant C after REMOTE_SYNC_ESCALATE_MS
   // of "still syncing". Cleared as soon as the sync completes (or unmounts).
+  const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const escalateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Distinguishes the FIRST socket connect (initial page load — the scene
   // loader owns fetching the initial data) from every SUBSEQUENT reconnect
@@ -555,25 +567,46 @@ export const useEditorCollaboration = ({
     //      immediately if the incoming payload rewrites >30% of the scene.
     const beginRemoteSyncUI = () => {
       if (isUnmountingRef.current) return;
-      setIsRemoteSyncing(true);
+      // Don't announce yet. A fetch+merge that finishes inside the grace
+      // period ends the sync before this fires, so a peer drawing steadily
+      // no longer strobes the pill once per stroke.
+      if (showTimerRef.current) {
+        clearTimeout(showTimerRef.current);
+      }
+      showTimerRef.current = setTimeout(() => {
+        showTimerRef.current = null;
+        if (isUnmountingRef.current) return;
+        setIsRemoteSyncing(true);
+      }, REMOTE_SYNC_SHOW_DELAY_MS);
       if (escalateTimerRef.current) {
         clearTimeout(escalateTimerRef.current);
       }
       escalateTimerRef.current = setTimeout(() => {
         escalateTimerRef.current = null;
         if (isUnmountingRef.current) return;
+        setIsRemoteSyncing(true);
         setIsRemoteSyncEscalated(true);
-      }, REMOTE_SYNC_ESCALATE_MS);
+      }, REMOTE_SYNC_SHOW_DELAY_MS + REMOTE_SYNC_ESCALATE_MS);
     };
     const escalateRemoteSyncUI = () => {
       if (isUnmountingRef.current) return;
+      if (showTimerRef.current) {
+        clearTimeout(showTimerRef.current);
+        showTimerRef.current = null;
+      }
       if (escalateTimerRef.current) {
         clearTimeout(escalateTimerRef.current);
         escalateTimerRef.current = null;
       }
+      // A big diff is worth showing immediately — skip the grace period.
+      setIsRemoteSyncing(true);
       setIsRemoteSyncEscalated(true);
     };
     const endRemoteSyncUI = () => {
+      if (showTimerRef.current) {
+        clearTimeout(showTimerRef.current);
+        showTimerRef.current = null;
+      }
       if (escalateTimerRef.current) {
         clearTimeout(escalateTimerRef.current);
         escalateTimerRef.current = null;
@@ -1051,6 +1084,10 @@ export const useEditorCollaboration = ({
       if (serverUpdateTimerRef.current) {
         clearTimeout(serverUpdateTimerRef.current);
         serverUpdateTimerRef.current = null;
+      }
+      if (showTimerRef.current) {
+        clearTimeout(showTimerRef.current);
+        showTimerRef.current = null;
       }
       if (escalateTimerRef.current) {
         clearTimeout(escalateTimerRef.current);

@@ -56,6 +56,7 @@ import {
   REMOTE_FETCH_TIMEOUT_MS,
   REMOTE_SYNC_ESCALATE_MS,
   MAX_CONSECUTIVE_REMOTE_TIMEOUTS,
+  REMOTE_SYNC_SHOW_DELAY_MS,
 } from "./useEditorCollaboration";
 import { diagnostics } from "../../lib/diagnostics";
 
@@ -199,6 +200,57 @@ describe("useEditorCollaboration drawing-server-update", () => {
     });
     await vi.waitFor(() => {
       expect(getDrawing).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("does not flash the sync pill for a fetch that lands inside the grace period", async () => {
+    // A peer drawing steadily fires a broadcast per stroke. Each one used to
+    // turn the pill on immediately, so the indicator strobed continuously even
+    // though every merge finished in a few milliseconds.
+    getDrawingImpl = vi.fn(async () => ({
+      id: "d1",
+      elements: [{ id: "e1" }],
+      appState: {},
+      files: {},
+      version: 2,
+    }));
+    const props = buildProps();
+    const { result } = renderHook(() => useEditorCollaboration(props));
+
+    emitServerUpdate();
+    await act(async () => {
+      vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+    });
+    // Fetch + merge has settled well before the grace period elapses.
+    await act(async () => {
+      vi.advanceTimersByTime(REMOTE_SYNC_SHOW_DELAY_MS + 50);
+    });
+
+    expect(result.current.isRemoteSyncing).toBe(false);
+    expect(result.current.isRemoteSyncEscalated).toBe(false);
+  });
+
+  it("shows the pill once a fetch outlives the grace period", async () => {
+    let release: (value: any) => void = () => {};
+    getDrawingImpl = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const props = buildProps();
+    const { result } = renderHook(() => useEditorCollaboration(props));
+
+    emitServerUpdate();
+    await act(async () => {
+      vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS + REMOTE_SYNC_SHOW_DELAY_MS + 10);
+    });
+    // The fetch is still in flight past the grace period, so the user does get
+    // told something is happening.
+    expect(result.current.isRemoteSyncing).toBe(true);
+
+    await act(async () => {
+      release({ id: "d1", elements: [], appState: {}, files: {}, version: 2 });
     });
   });
 

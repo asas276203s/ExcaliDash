@@ -3,6 +3,8 @@ import type { FormEvent, MutableRefObject } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import * as api from "../../api";
+import { getRememberedDashboardView } from "../../utils/lastDashboardView";
+
 import { exportFromEditor } from "../../utils/exportUtils";
 import { hasRenderableElements } from "./shared";
 
@@ -186,7 +188,7 @@ export const useEditorCommands = ({
     } finally {
       setIsSavingOnLeave(false);
     }
-    if (shouldNavigate) navigate("/");
+    if (shouldNavigate) navigate(getRememberedDashboardView());
   }, [
     canEdit,
     drawingId,
