@@ -1,7 +1,6 @@
 import type { MutableRefObject } from "react";
-import { toast } from "sonner";
 import * as api from "../../api";
-import { diffCount, mergeElements } from "../../utils/element-merge";
+import { mergeElements } from "../../utils/element-merge";
 import { normalizeServerElements } from "../../utils/normalize-server-elements";
 import { getFilesDelta } from "./shared";
 
@@ -96,7 +95,6 @@ export const resolveVersionConflict = async ({
     typeof fresh.version === "number" ? fresh.version : reportedVersion;
 
   const merged = mergeElements(localSnapshotElements, freshElements);
-  const changeCount = diffCount(localSnapshotElements, freshElements);
 
   const excalApi = refs.excalidrawAPI.current;
   if (excalApi && typeof excalApi.updateScene === "function") {
