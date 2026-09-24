@@ -17,6 +17,7 @@ let api: UseTabsResult | null = null;
 let go: ((to: string) => void) | null = null;
 let path = "";
 let search = "";
+let trail: string[] = [];
 
 const Harness: React.FC = () => {
   const match = useMatch("/editor/:id");
@@ -26,6 +27,7 @@ const Harness: React.FC = () => {
   go = (to: string) => navigate(to);
   path = loc.pathname;
   search = loc.search;
+  if (trail[trail.length - 1] !== loc.pathname + loc.search) trail.push(loc.pathname + loc.search);
   return null;
 };
 
@@ -39,6 +41,7 @@ beforeEach(() => {
   go = null;
   path = "";
   search = "";
+  trail = [];
 });
 
 const mount = (initial: string) =>

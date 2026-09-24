@@ -104,6 +104,14 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
   // sit next to it in the bar. HOME_VIEW is a member like any tab, so closing
   // a drawing opened from the dashboard goes back to the dashboard.
   const visitHistoryRef = useRef<string[]>(readVisitHistory());
+  // Id of the tab closed most recently from the editor, cleared once the
+  // route has actually moved off it.
+  const justClosedRef = useRef<string | null>(null);
+  // Set while a close-triggered navigation is in flight. The URL mirror runs
+  // on a state change that lands before the router commits the new route, so
+  // without this it replace()s the tab params back onto the closed drawing
+  // and the canvas never leaves.
+  const pendingCloseNavRef = useRef<string | null>(null);
 
   const [tabs, setTabs] = useState<EditorTab[]>([]);
   const [hasClosedHistory, setHasClosedHistory] = useState<boolean>(
@@ -157,6 +165,8 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
   useEffect(() => {
     if (!currentDrawingId) return;
     if (!hasHydratedRef.current) return;
+    if (justClosedRef.current === currentDrawingId) return;
+    justClosedRef.current = null;
     setTabs((prev) => withEnsuredId(prev, currentDrawingId));
   }, [currentDrawingId]);
 
@@ -175,10 +185,12 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
         nextActive,
       );
       if (nextSearch !== location.search) {
-        navigate(
-          { pathname: location.pathname, search: nextSearch, hash: location.hash },
-          { replace: true },
-        );
+        // Mirror the tab params onto whatever route is CURRENT — never pin the
+        // pathname from this closure. Closing the active tab navigates away and
+        // then persists; replaying the captured pathname here replaced the route
+        // straight back onto the drawing that was just closed, so the tab
+        // vanished from the bar but the canvas stayed put.
+        navigate({ search: nextSearch, hash: location.hash }, { replace: true });
       }
     },
     [location.hash, location.pathname, location.search, navigate],
@@ -196,6 +208,12 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
     if (skipNextPersistRef.current) {
       skipNextPersistRef.current = false;
       return;
+    }
+    if (pendingCloseNavRef.current) {
+      // Still sitting on the drawing we just closed — the navigation has not
+      // committed yet. Writing the URL now would replace it back.
+      if (currentDrawingId === pendingCloseNavRef.current) return;
+      pendingCloseNavRef.current = null;
     }
     syncPersistence(tabs, currentDrawingId || readActiveTab());
   }, [tabs, currentDrawingId, syncPersistence, location.pathname]);
@@ -245,38 +263,53 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
 
   const closeTab: UseTabsResult["closeTab"] = useCallback(
     (id) => {
-      setTabs((prev) => {
-        const closing = prev.find((t) => t.id === id);
-        if (!closing) return prev;
-        pushClosedTab({ id: closing.id, name: closing.name });
-        setHasClosedHistory(true);
-        const remaining = prev.filter((t) => t.id !== id);
-        if (currentDrawingId === id) {
-          const survives = (view: string) =>
-            view === HOME_VIEW || remaining.some((t) => t.id === view);
-          const previousView = visitHistoryRef.current
-            .filter((view) => view !== id)
-            .find(survives);
-          visitHistoryRef.current = visitHistoryRef.current.filter(
-            (view) => view !== id,
-          );
-          writeVisitHistory(visitHistoryRef.current);
-          if (previousView && previousView !== HOME_VIEW) {
-            navigate(`/editor/${previousView}`);
-          } else if (previousView === HOME_VIEW || remaining.length === 0) {
-            navigate(getRememberedDashboardView());
-          } else {
-            // No history to fall back on (a restored workspace, say) — keep
-            // the old neighbour behaviour rather than kicking the user out.
-            const index = prev.findIndex((t) => t.id === id);
-            const nextTab = remaining[index] || remaining[index - 1] || null;
-            navigate(nextTab ? `/editor/${nextTab.id}` : getRememberedDashboardView());
-          }
+      const closing = tabs.find((t) => t.id === id);
+      if (!closing) return;
+      const remaining = tabs.filter((t) => t.id !== id);
+
+      // Work out where to go BEFORE touching state, and navigate outside the
+      // setTabs updater. Navigating from inside an updater is a side effect in
+      // what React treats as render work — it can be dropped or replayed, which
+      // is why closing the active tab removed it from the bar but left the
+      // canvas sitting on the drawing that was just closed.
+      let target: string | null = null;
+      if (currentDrawingId === id) {
+        const survives = (view: string) =>
+          view === HOME_VIEW || remaining.some((t) => t.id === view);
+        const previousView = visitHistoryRef.current
+          .filter((view) => view !== id)
+          .find(survives);
+        if (previousView && previousView !== HOME_VIEW) {
+          target = `/editor/${previousView}`;
+        } else if (previousView === HOME_VIEW || remaining.length === 0) {
+          target = getRememberedDashboardView();
+        } else {
+          // No usable history — fall back to the old neighbour behaviour
+          // rather than kicking the user out of the workspace.
+          const index = tabs.findIndex((t) => t.id === id);
+          const nextTab = remaining[index] || remaining[index - 1] || null;
+          target = nextTab
+            ? `/editor/${nextTab.id}`
+            : getRememberedDashboardView();
         }
-        return remaining;
-      });
+        visitHistoryRef.current = visitHistoryRef.current.filter(
+          (view) => view !== id,
+        );
+        writeVisitHistory(visitHistoryRef.current);
+        // The "keep the current drawing id represented as an open tab" effect
+        // re-adds a tab for whatever id is in the URL. Until the navigation
+        // above commits, that id is still the one we just closed — so remember
+        // it and let that effect skip it.
+        justClosedRef.current = id;
+      }
+
+      pushClosedTab({ id: closing.id, name: closing.name });
+      setHasClosedHistory(true);
+      if (target) pendingCloseNavRef.current = id;
+      setTabs(remaining);
+      if (target) navigate(target);
     },
-    [currentDrawingId, navigate],
+    [tabs, currentDrawingId, navigate],
   );
 
   useEffect(() => {
