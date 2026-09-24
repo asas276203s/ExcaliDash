@@ -32,6 +32,10 @@ export const ShareModal: React.FC<Props> = ({
 }) => {
   const { user } = useAuth();
   const currentUserId = user?.id || null;
+  // Non-owners get a 404 from GET /drawings/:id/sharing (deliberate: the
+  // server won't confirm a drawing exists to someone who can't manage it).
+  // Surfacing that as "Failed to load sharing settings" reads like a bug.
+  const [permissionNotice, setPermissionNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sharing, setSharing] = useState<{
@@ -83,10 +87,19 @@ export const ShareModal: React.FC<Props> = ({
   const refresh = useCallback(async () => {
     setIsLoading(true);
     setError(null);
+    setPermissionNotice(null);
     try {
       const data = await api.getDrawingSharing(drawingId);
       setSharing(data);
     } catch (err: unknown) {
+      const status = api.isAxiosError(err) ? err.response?.status : undefined;
+      if (status === 403 || status === 404) {
+        setPermissionNotice(
+          "Only the owner can manage sharing for this drawing. You can still copy the link and send it to someone who already has access.",
+        );
+        setSharing(null);
+        return;
+      }
       let message = "Failed to load sharing settings";
       if (api.isAxiosError(err)) {
         const serverMessage =
@@ -309,6 +322,13 @@ export const ShareModal: React.FC<Props> = ({
 
         {/* Content */}
         <div className="flex-1 px-6 py-5 space-y-5 overflow-visible">
+          {permissionNotice && (
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-neutral-800/60 border border-slate-200 dark:border-neutral-700 text-xs font-medium text-slate-600 dark:text-neutral-300 flex items-center gap-3">
+              <AlertTriangle size={16} strokeWidth={2} className="flex-shrink-0" />
+              {permissionNotice}
+            </div>
+          )}
+
           {error && (
             <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800 text-xs font-semibold text-rose-600 dark:text-rose-400 flex items-center gap-3">
               <AlertTriangle size={16} strokeWidth={2} />
