@@ -19,6 +19,7 @@ export interface StoredTab {
 export const OPEN_TABS_KEY = "excalidash.open-tabs";
 export const ACTIVE_TAB_KEY = "excalidash.active-tab";
 export const CLOSED_TABS_KEY = "excalidash.closed-tabs";
+export const VISIT_HISTORY_KEY = "excalidash.visit-history";
 
 const MAX_CLOSED_HISTORY = 20;
 
@@ -160,6 +161,37 @@ export const writeActiveTab = (id: string | null): void => {
     window.localStorage.setItem(key, id);
   } else {
     window.localStorage.removeItem(key);
+  }
+};
+
+/**
+ * Most-recently-visited views (tab ids, plus the HOME sentinel), newest first.
+ *
+ * Persisted for the same reason the open tabs are: a reload otherwise leaves
+ * the workspace restored but the history empty, so closing a tab falls back to
+ * "whatever sits next to it" — which is exactly the behaviour this replaced.
+ */
+export const readVisitHistory = (): string[] => {
+  if (typeof window === "undefined") return [];
+  const key = scopedKey(VISIT_HISTORY_KEY);
+  if (!key) return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((v): v is string => typeof v === "string" && !!v);
+  } catch {
+    return [];
+  }
+};
+
+export const writeVisitHistory = (views: string[]): void => {
+  if (typeof window === "undefined") return;
+  const key = scopedKey(VISIT_HISTORY_KEY);
+  if (!key) return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(views));
+  } catch {
+    // Storage full or blocked — the in-memory history still works this session.
   }
 };
 

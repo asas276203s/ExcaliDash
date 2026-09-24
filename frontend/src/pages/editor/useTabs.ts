@@ -16,6 +16,8 @@ import {
   stripTabsFromSearch,
   mergeStoredTabsWithUrl,
   type StoredTab,
+  readVisitHistory,
+  writeVisitHistory,
 } from "../../utils/tabsStorage";
 
 export interface EditorTab {
@@ -101,7 +103,7 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
   // return to wherever the user actually came from, not to whatever happens to
   // sit next to it in the bar. HOME_VIEW is a member like any tab, so closing
   // a drawing opened from the dashboard goes back to the dashboard.
-  const visitHistoryRef = useRef<string[]>([]);
+  const visitHistoryRef = useRef<string[]>(readVisitHistory());
 
   const [tabs, setTabs] = useState<EditorTab[]>([]);
   const [hasClosedHistory, setHasClosedHistory] = useState<boolean>(
@@ -258,6 +260,7 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
           visitHistoryRef.current = visitHistoryRef.current.filter(
             (view) => view !== id,
           );
+          writeVisitHistory(visitHistoryRef.current);
           if (previousView && previousView !== HOME_VIEW) {
             navigate(`/editor/${previousView}`);
           } else if (previousView === HOME_VIEW || remaining.length === 0) {
@@ -280,10 +283,14 @@ export const useTabs = (currentDrawingId: string | undefined): UseTabsResult => 
     const view = currentDrawingId || HOME_VIEW;
     const prev = visitHistoryRef.current;
     if (prev[0] === view) return;
-    visitHistoryRef.current = [view, ...prev.filter((v) => v !== view)].slice(
+    const next = [view, ...prev.filter((v) => v !== view)].slice(
       0,
       MAX_VISIT_HISTORY,
     );
+    visitHistoryRef.current = next;
+    // Persist: a reload restores the workspace but would otherwise start with
+    // an empty history, dropping straight back to positional-neighbour close.
+    writeVisitHistory(next);
   }, [currentDrawingId]);
 
   const activateTab: UseTabsResult["activateTab"] = useCallback(
