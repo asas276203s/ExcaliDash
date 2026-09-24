@@ -14,6 +14,9 @@ export const EXPIRY_OPTIONS_FOR_EDIT = EXPIRY_OPTIONS.filter(
 
 export const DEFAULT_EDIT_EXPIRY_OPTION = "7d";
 
+/** Opening Share creates a view link with this expiry when none exists yet. */
+export const DEFAULT_EXPIRY_OPTION = "30d";
+
 export const toIsoFromDatetimeLocal = (value: string): string | undefined => {
   const trimmed = (value || "").trim();
   if (!trimmed) return undefined;

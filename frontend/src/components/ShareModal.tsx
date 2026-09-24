@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   X,
@@ -15,6 +15,7 @@ import {
   calculateExpiresAt,
   DEFAULT_EDIT_EXPIRY_OPTION,
   toDatetimeLocalFromIso,
+  DEFAULT_EXPIRY_OPTION,
 } from "./share-modal/shareUtils";
 
 type Props = {
@@ -47,7 +48,7 @@ export const ShareModal: React.FC<Props> = ({
   const [userResults, setUserResults] = useState<api.ShareResolvedUser[]>([]);
   const [userPermission, setUserPermission] = useState<"view" | "edit">("view");
   const [linkPermission, setLinkPermission] = useState<"view" | "edit">("view");
-  const [expiryOption, setExpiryOption] = useState("1d");
+  const [expiryOption, setExpiryOption] = useState(DEFAULT_EXPIRY_OPTION);
   const [customExpiry, setCustomExpiry] = useState("");
   const [isCopied, setIsCopied] = useState(false);
 
@@ -120,11 +121,30 @@ export const ShareModal: React.FC<Props> = ({
     setUserResults([]);
     setUserPermission("view");
     setLinkPermission("view");
-    setExpiryOption("1d");
+    setExpiryOption(DEFAULT_EXPIRY_OPTION);
     setCustomExpiry("");
     setIsCopied(false);
     void refresh();
   }, [isOpen, refresh]);
+
+  // Opening Share is almost always "I want to hand someone this link", so make
+  // the link exist rather than making the user flip Restricted -> Anyone first.
+  // Only ever creates one when there is none; an existing link (and whatever
+  // expiry it already has) is left exactly as it is.
+  const autoLinkAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (!isOpen) {
+      autoLinkAttemptedRef.current = false;
+      return;
+    }
+    if (isLoading || autoLinkAttemptedRef.current) return;
+    if (!sharing || activeLink || permissionNotice || error) return;
+    autoLinkAttemptedRef.current = true;
+    void handleUpdateLink("view", calculateExpiresAt(DEFAULT_EXPIRY_OPTION));
+    // handleUpdateLink is recreated every render; the ref guard is what keeps
+    // this to a single attempt per open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, isLoading, sharing, activeLink, permissionNotice, error]);
 
   useEffect(() => {
     if (!isOpen) return;
