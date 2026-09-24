@@ -262,7 +262,9 @@ export const TabBar: React.FC<TabBarProps> = ({
       elRect.left >= scrollerRect.left &&
       elRect.right <= scrollerRect.right;
     if (fullyVisible) return;
-    el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    // Instant, not smooth: centring is a bigger jump than the old edge-nudge,
+    // and animating it made every tab switch start with a visible slide.
+    el.scrollIntoView({ behavior: "auto", block: "nearest", inline: "center" });
   }, [activeId, tabs]);
 
   const updateShadows = () => {
