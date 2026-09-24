@@ -1,17 +1,20 @@
-import React from "react";
+import React, { useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowRight,
+  Check,
   Copy,
   Download,
   FolderInput,
   HardDrive,
+  Link as LinkIcon,
   Loader2,
   PenTool,
   Trash2,
 } from "lucide-react";
 import type { Collection, DrawingSummary } from "../../types";
 import { CollectionMoveOptions } from "./CollectionMoveOptions";
+import { copyText } from "../../utils/copyText";
 
 interface DrawingCardContextMenuProps {
   drawing: DrawingSummary;
@@ -51,8 +54,9 @@ export const DrawingCardContextMenu: React.FC<DrawingCardContextMenuProps> = ({
   onDelete,
   onManageStorage,
   onExport,
-}) =>
-  createPortal(
+}) => {
+  const [copied, setCopied] = useState(false);
+  return createPortal(
     <div
       className="fixed inset-0 z-50"
       onClick={onClose}
@@ -66,6 +70,29 @@ export const DrawingCardContextMenu: React.FC<DrawingCardContextMenuProps> = ({
         style={{ top: position.y, left: position.x }}
         onClick={(e) => e.stopPropagation()}
       >
+        {!isTrash ? (
+          <button
+            onClick={async () => {
+              const ok = await copyText(
+                `${window.location.origin}/editor/${drawing.id}`,
+              );
+              if (!ok) return;
+              setCopied(true);
+              window.setTimeout(onClose, 600);
+            }}
+            className="w-full px-3 py-2 text-sm text-left text-slate-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-neutral-900 dark:hover:text-white flex items-center gap-2"
+          >
+            {copied ? (
+              <>
+                <Check size={14} /> Link copied
+              </>
+            ) : (
+              <>
+                <LinkIcon size={14} /> Copy link
+              </>
+            )}
+          </button>
+        ) : null}
         {!isTrash &&
         (!isShared ||
           drawing.accessLevel === "edit" ||
@@ -166,3 +193,4 @@ export const DrawingCardContextMenu: React.FC<DrawingCardContextMenuProps> = ({
     </div>,
     document.body,
   );
+};

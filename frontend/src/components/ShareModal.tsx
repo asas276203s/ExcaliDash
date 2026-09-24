@@ -49,6 +49,10 @@ export const ShareModal: React.FC<Props> = ({
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const shareableEditorUrl = `${origin}/shared/${drawingId}`;
+  // Restricted drawings have no /shared link, but the owner still needs a URL
+  // to hand to someone who already has access. The editor route is that URL —
+  // it grants nothing on its own, the server still checks permissions.
+  const directEditorUrl = `${origin}/editor/${drawingId}`;
 
   const activeLink = useMemo(() => {
     const now = Date.now();
@@ -277,7 +281,7 @@ export const ShareModal: React.FC<Props> = ({
   };
 
   if (!isOpen) return null;
-  const currentLinkUrl = activeLink ? shareableEditorUrl : "";
+  const currentLinkUrl = activeLink ? shareableEditorUrl : directEditorUrl;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -340,14 +344,16 @@ export const ShareModal: React.FC<Props> = ({
         <div className="px-6 py-4 flex items-center justify-between border-t-2 border-black dark:border-neutral-700 bg-slate-50 dark:bg-neutral-800/50 rounded-b-[14px]">
           <button
             onClick={() => handleCopy(currentLinkUrl)}
-            disabled={!activeLink}
+            title={
+              activeLink
+                ? "Copy the share link"
+                : "Copy the drawing link — only people you have given access to can open it"
+            }
             className={clsx(
               "flex items-center gap-2 px-4 py-2 rounded-xl border-2 font-bold text-xs transition-all active:translate-x-[1px] active:translate-y-[1px]",
               isCopied
                 ? "bg-emerald-500 text-white border-black shadow-none translate-x-[1px] translate-y-[1px]"
                 : "bg-white dark:bg-neutral-900 border-black dark:border-neutral-600 text-indigo-600 dark:text-indigo-400 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] dark:shadow-[2px_2px_0px_0px_rgba(255,255,255,0.05)] hover:-translate-y-0.5",
-              !activeLink &&
-                "opacity-40 grayscale cursor-not-allowed shadow-none",
             )}
           >
             {isCopied ? (
