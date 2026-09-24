@@ -19,6 +19,7 @@ import { UIOptions } from "./shared";
 import { SyncIndicator } from "./SyncIndicator";
 import { FontSizeControl } from "./FontSizeControl";
 import { TabBar } from "./TabBar";
+import { CopyLinkButton } from "./CopyLinkButton";
 import type { EditorTab } from "./useTabs";
 
 interface Peer extends UserIdentity {
@@ -209,6 +210,7 @@ export const EditorView: React.FC<EditorViewProps> = ({
             <History size={20} />
           </button>
         ) : null}
+        {id ? <CopyLinkButton drawingId={id} /> : null}
         {accessLevel === "owner" && id ? (
           <button
             onClick={onShareOpen}
