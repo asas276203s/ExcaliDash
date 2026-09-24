@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { PenTool, Check, Clock } from "lucide-react";
+import { PenTool, Check, Clock, Link as LinkIcon } from "lucide-react";
 import type { DrawingSummary, Collection } from "../types";
 import { formatDistanceToNow } from "date-fns";
 import clsx from "clsx";
@@ -10,6 +10,7 @@ import { DrawingCardContextMenu } from "./drawing-card/DrawingCardContextMenu";
 import { useDrawingPreview } from "./drawing-card/useDrawingPreview";
 import { usePreviewObjectUrl } from "./drawing-card/usePreviewObjectUrl";
 import * as api from "../api";
+import { copyText } from "../utils/copyText";
 
 interface DrawingCardProps {
   drawing: DrawingSummary;
@@ -47,6 +48,7 @@ export const DrawingCard: React.FC<DrawingCardProps> = ({
   onPreviewGenerated,
 }) => {
   const [isRenaming, setIsRenaming] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const [showMoveSubmenu, setShowMoveSubmenu] = useState(false);
   const [showCollectionDropdown, setShowCollectionDropdown] = useState(false);
   const [newName, setNewName] = useState(drawing.name);
@@ -181,9 +183,36 @@ export const DrawingCard: React.FC<DrawingCardProps> = ({
         )}
       >
         <div
-          className="absolute top-2.5 right-2.5 z-20 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+          className="absolute top-2.5 right-2.5 z-20 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
           style={{ opacity: isSelected ? 1 : undefined }}
         >
+          {!isTrash && (
+            <button
+              onClick={async (e) => {
+                e.stopPropagation();
+                const ok = await copyText(
+                  `${window.location.origin}/editor/${drawing.id}`,
+                );
+                if (!ok) return;
+                setLinkCopied(true);
+                window.setTimeout(() => setLinkCopied(false), 1500);
+              }}
+              title={linkCopied ? "Link copied" : "Copy link"}
+              aria-label={`Copy link to ${drawing.name}`}
+              className={clsx(
+                "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all duration-200 shadow-sm",
+                linkCopied
+                  ? "bg-emerald-500 border-emerald-500 text-white"
+                  : "bg-white dark:bg-neutral-800 border-slate-300 dark:border-neutral-600 text-slate-600 dark:text-neutral-300 hover:border-neutral-500 dark:hover:border-neutral-400",
+              )}
+            >
+              {linkCopied ? (
+                <Check size={12} strokeWidth={3} />
+              ) : (
+                <LinkIcon size={12} strokeWidth={2.5} />
+              )}
+            </button>
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();
