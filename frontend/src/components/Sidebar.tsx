@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   LayoutGrid,
   Folder,
@@ -53,6 +53,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [collectionToShare, setCollectionToShare] = useState<string | null>(
     null,
   );
+  const navRef = useRef<HTMLElement>(null);
+
+  // Returning to the dashboard with a collection selected used to leave the
+  // sidebar scrolled wherever it happened to be — with a long list the active
+  // folder was simply off-screen. Bring it into view (nearest, so an already
+  // visible item never moves).
+  useEffect(() => {
+    if (typeof selectedCollectionId !== "string") return;
+    const nav = navRef.current;
+    if (!nav) return;
+    const item = nav.querySelector<HTMLElement>(
+      `[data-sidebar-item-id="${CSS.escape(selectedCollectionId)}"]`,
+    );
+    if (!item) return;
+    const navRect = nav.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    if (navRect.height === 0 || itemRect.height === 0) return;
+    const fullyVisible =
+      itemRect.top >= navRect.top && itemRect.bottom <= navRect.bottom;
+    if (fullyVisible) return;
+    item.scrollIntoView({ behavior: "auto", block: "center" });
+  }, [selectedCollectionId, collections]);
+
   useEffect(() => {
     const handleClickOutside = () => setContextMenu(null);
     document.addEventListener("click", handleClickOutside);
@@ -103,6 +126,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </h1>
         </div>
         <nav
+          ref={navRef}
           className="flex-1 overflow-y-auto py-3 sm:py-4 space-y-4 sm:space-y-8 custom-scrollbar"
           onContextMenu={handleBackgroundContextMenu}
         >

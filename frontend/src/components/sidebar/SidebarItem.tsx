@@ -37,7 +37,7 @@ export const SidebarItem: React.FC<SidebarItemProps> = ({
   const [isDragOver, setIsDragOver] = useState(false);
 
   return (
-    <div className="relative group/item pl-3 pr-2">
+    <div className="relative group/item pl-3 pr-2" data-sidebar-item-id={id}>
       {isEditing ? (
         <form onSubmit={onEditSubmit} className="py-1">
           <input
