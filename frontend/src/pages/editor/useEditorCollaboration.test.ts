@@ -57,6 +57,7 @@ import {
   REMOTE_SYNC_ESCALATE_MS,
   MAX_CONSECUTIVE_REMOTE_TIMEOUTS,
   REMOTE_SYNC_SHOW_DELAY_MS,
+  PENDING_EDIT_RETRY_MS,
 } from "./useEditorCollaboration";
 import { diagnostics } from "../../lib/diagnostics";
 
@@ -332,14 +333,46 @@ describe("useEditorCollaboration drawing-server-update", () => {
     await act(async () => {
       vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
     });
-    await vi.waitFor(() => {
-      expect(toastInfo).toHaveBeenCalledWith(
-        "Server 有更新、請先儲存你的改動",
-      );
-    });
+    // No nagging toast: unsaved-edits is a ~1s window while the autosave
+    // debounce runs, so announcing it fired on almost every peer stroke.
+    expect(toastInfo).not.toHaveBeenCalled();
     expect(props.excalidrawAPI.current.updateScene).not.toHaveBeenCalled();
     // Version baseline untouched — next save will hit the conflict path.
     expect(props.currentDrawingVersionRef.current).toBe(1);
+  });
+
+  it("retries a deferred remote update instead of dropping it", async () => {
+    const props = buildProps();
+    const persisted = [{ id: "e1", version: 1, versionNonce: 1, updated: 1 }];
+    props.lastPersistedElementsRef.current = persisted;
+    props.latestElementsRef.current = [
+      { id: "e1", version: 2, versionNonce: 9, updated: 99 },
+    ];
+    props.currentDrawingVersionRef.current = 1;
+    const getDrawing = vi.fn(async () => ({
+      id: "d1",
+      elements: [{ id: "e1", version: 5, versionNonce: 55, updated: 555 }],
+      appState: {},
+      files: {},
+      version: 4,
+    }));
+    getDrawingImpl = getDrawing;
+    renderHook(() => useEditorCollaboration(props));
+    emitServerUpdate();
+    await act(async () => {
+      vi.advanceTimersByTime(SERVER_UPDATE_DEBOUNCE_MS);
+    });
+    const afterFirst = getDrawing.mock.calls.length;
+
+    // The autosave lands: local matches what was persisted again.
+    props.lastPersistedElementsRef.current = props.latestElementsRef.current;
+
+    await act(async () => {
+      vi.advanceTimersByTime(PENDING_EDIT_RETRY_MS + 50);
+    });
+
+    // Came back for the update rather than dropping it on the floor.
+    expect(getDrawing.mock.calls.length).toBeGreaterThan(afterFirst);
   });
 
   it("ignores events for other drawings", async () => {

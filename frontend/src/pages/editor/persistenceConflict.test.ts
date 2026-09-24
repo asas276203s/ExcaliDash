@@ -68,7 +68,7 @@ describe("resolveVersionConflict", () => {
     vi.clearAllMocks();
   });
 
-  it("merges local + fresh, applies to canvas, bumps version, toasts undo", async () => {
+  it("merges local + fresh, applies to canvas, bumps version, stays silent", async () => {
     const refs = buildRefs();
     const local = [el("a", 5), el("b", 1)];
     // Fresh: MCP added element `c`, kept `a` at v2 (older than local's v5).
@@ -112,19 +112,9 @@ describe("resolveVersionConflict", () => {
       "c",
     ]);
 
-    // Toast fired with undo action.
-    expect(toastInfo).toHaveBeenCalledTimes(1);
-    const [msg, opts] = toastInfo.mock.calls[0];
-    expect(String(msg)).toMatch(/合併|同步/);
-    expect(opts.action?.label).toBe("復原");
-
-    // Invoking undo restores local snapshot.
-    opts.action.onClick();
-    expect(refs.excalidrawAPI.current.updateScene).toHaveBeenCalledTimes(2);
-    expect(refs.latestElements.current.map((e: any) => e.id).sort()).toEqual([
-      "a",
-      "b",
-    ]);
+    // Silent: the merge is already on the canvas and there is nothing for the
+    // user to decide, so announcing it on every conflict was pure noise.
+    expect(toastInfo).not.toHaveBeenCalled();
   });
 
   it("throws DrawingSaveConflictError when getDrawing fails", async () => {

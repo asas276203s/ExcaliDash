@@ -129,34 +129,10 @@ export const resolveVersionConflict = async ({
     refs.currentDrawingVersion.current = freshVersion;
   }
 
-  const restoreLocal = () => {
-    const restoreApi = refs.excalidrawAPI.current;
-    if (!restoreApi) return;
-    refs.isSyncing.current = true;
-    try {
-      restoreApi.updateScene({
-        elements: localSnapshotElements,
-        appState: persistableAppState,
-        captureUpdate: "NEVER",
-      });
-    } finally {
-      refs.isSyncing.current = false;
-    }
-    refs.latestElements.current = localSnapshotElements;
-  };
-
-  toast.info(
-    changeCount > 0
-      ? `已合併其他來源的 ${changeCount} 處變更`
-      : "已重新同步伺服器版本",
-    {
-      duration: 5000,
-      action: {
-        label: "復原",
-        onClick: restoreLocal,
-      },
-    },
-  );
+  // No toast here. The merge already happened and the canvas shows the result;
+  // telling the user "merged N changes from elsewhere" on every conflict was
+  // noise during collaboration and there is nothing for them to act on. Undo
+  // and the History panel remain the way back.
 
   const nextFilesFlag =
     Object.keys(

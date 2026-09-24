@@ -6,14 +6,17 @@ export const useEditorAutoHide = (drawingId: string | undefined) => {
     [drawingId],
   );
 
+  // Off until the user asks for it. Auto-hiding the toolbar on a brand new
+  // canvas surprises people who have not met the feature yet; opting in is a
+  // single toggle and the choice is remembered per drawing.
   const getStoredAutoHideEnabled = useCallback((): boolean => {
-    if (!storageKey) return true;
+    if (!storageKey) return false;
     try {
       const raw = window.localStorage.getItem(storageKey);
-      if (raw === null) return true;
+      if (raw === null) return false;
       return raw === "1" || raw === "true";
     } catch {
-      return true;
+      return false;
     }
   }, [storageKey]);
 

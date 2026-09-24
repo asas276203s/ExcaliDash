@@ -83,6 +83,19 @@ export const MAX_CONSECUTIVE_REMOTE_TIMEOUTS = 3;
  * happens; it just stops being announced unless it is slow enough that the
  * user would otherwise wonder what the canvas is doing.
  */
+/**
+ * When a remote update arrives while the local user still has unsaved edits we
+ * refuse to apply it (applying would clobber their work). The old code also
+ * toasted "Server 有更新、請先儲存你的改動" and then gave up — so during
+ * collaboration it fired constantly (unsaved-edits is a ~1s window while the
+ * autosave debounce runs) AND the update was silently dropped.
+ *
+ * Now it just waits for the autosave to land and retries, quietly. Bounded so
+ * a permanently-dirty scene cannot spin forever.
+ */
+export const PENDING_EDIT_RETRY_MS = 1200;
+export const PENDING_EDIT_MAX_RETRIES = 4;
+
 export const REMOTE_SYNC_SHOW_DELAY_MS = 350;
 
 export const REMOTE_SYNC_ESCALATE_MS = 400;
@@ -185,6 +198,9 @@ export const useEditorCollaboration = ({
   // Timer that flips the pill into Variant C after REMOTE_SYNC_ESCALATE_MS
   // of "still syncing". Cleared as soon as the sync completes (or unmounts).
   const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingEditRetryTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
   const escalateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Distinguishes the FIRST socket connect (initial page load — the scene
   // loader owns fetching the initial data) from every SUBSEQUENT reconnect
@@ -620,6 +636,9 @@ export const useEditorCollaboration = ({
     };
     const fetchAndMergeServerUpdate = async (options?: {
       silent?: boolean;
+      /** Internal: how many times this call has already been deferred waiting
+       *  for the local autosave to land. Bounded by PENDING_EDIT_MAX_RETRIES. */
+      pendingRetry?: number;
       /**
        * Tags the call as the reconnect catch-up refetch (vs the normal
        * broadcast-driven fetch). Only affects diagnostics: emits the
@@ -747,9 +766,25 @@ export const useEditorCollaboration = ({
           // auto-merge path (see commit 0896f88). Blocking the apply here
           // would break the test-matrix "both survive" acceptance.
         } else if (hasLocalPendingEdits()) {
-          // No active gesture but pending edits — user has stale unsaved
-          // work from before. Refuse to clobber; wait for their save.
-          toast.info("Server 有更新、請先儲存你的改動");
+          // No active gesture but pending edits — unsaved work we must not
+          // clobber. Don't nag and don't drop the update: let the autosave
+          // land, then come back for it.
+          const attempt = options?.pendingRetry ?? 0;
+          if (attempt < PENDING_EDIT_MAX_RETRIES) {
+            if (pendingEditRetryTimerRef.current) {
+              clearTimeout(pendingEditRetryTimerRef.current);
+            }
+            pendingEditRetryTimerRef.current = setTimeout(() => {
+              pendingEditRetryTimerRef.current = null;
+              if (isUnmountingRef.current) return;
+              void fetchAndMergeServerUpdate({
+                ...options,
+                pendingRetry: attempt + 1,
+              });
+            }, PENDING_EDIT_RETRY_MS);
+          } else {
+            diagnostics.log("fetch-merge-pending-edits-gave-up", { drawingId });
+          }
           return;
         }
         // Normalize server elements (which may be MCP-authored and missing
@@ -1088,6 +1123,10 @@ export const useEditorCollaboration = ({
       if (showTimerRef.current) {
         clearTimeout(showTimerRef.current);
         showTimerRef.current = null;
+      }
+      if (pendingEditRetryTimerRef.current) {
+        clearTimeout(pendingEditRetryTimerRef.current);
+        pendingEditRetryTimerRef.current = null;
       }
       if (escalateTimerRef.current) {
         clearTimeout(escalateTimerRef.current);
