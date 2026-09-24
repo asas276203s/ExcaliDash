@@ -309,7 +309,7 @@ describe("useEditorCollaboration drawing-server-update", () => {
     expect(props.currentDrawingVersionRef.current).toBe(4);
     expectNormalizedNextElements(props.latestElementsRef.current as any[]);
     expectNormalizedNextElements(props.lastPersistedElementsRef.current as any[]);
-    expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
+    expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
   });
 
   it("does NOT merge when local pending edits are present", async () => {
@@ -619,7 +619,7 @@ describe("useEditorCollaboration drawing-server-update", () => {
     await vi.waitFor(() => {
       expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
     });
-    expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
+    expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
   });
 
   // BUG-15: hard cap the /drawings/:id fetch. If backend hangs, we abort
@@ -766,7 +766,7 @@ describe("useEditorCollaboration drawing-server-update", () => {
     // Baseline refs updated so subsequent saves target the new version.
     expect(props.currentDrawingVersionRef.current).toBe(4);
     expect(props.latestElementsRef.current).toEqual([]);
-    expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
+    expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
   });
 
   it("allows empty remote payload when local scene is also empty (fresh drawing)", async () => {
@@ -1102,7 +1102,7 @@ describe("useEditorCollaboration drawing-server-update", () => {
       await vi.waitFor(() => {
         expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
       });
-      expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
+      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
     });
 
     it("fires pill + applies for an MCP save whose origin has no user id", async () => {
@@ -1131,7 +1131,7 @@ describe("useEditorCollaboration drawing-server-update", () => {
       await vi.waitFor(() => {
         expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
       });
-      expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
+      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
     });
 
     it("promotes a coalesced burst to visible when a remote event joins a silent one", async () => {
@@ -1163,7 +1163,7 @@ describe("useEditorCollaboration drawing-server-update", () => {
       });
       // Only ONE coalesced fetch, and it was visible.
       expect(getDrawingSpy).toHaveBeenCalledTimes(1);
-      expect(toastSuccess).toHaveBeenCalledWith("已從 Server 同步最新內容");
+      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
     });
 
     it("back-fills the acting user id from the drawing GET response (bootstrap: auth context has no user)", async () => {
@@ -1194,7 +1194,7 @@ describe("useEditorCollaboration drawing-server-update", () => {
         expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
       });
       // The first one shows the toast (id wasn't known yet).
-      expect(toastSuccess).toHaveBeenCalledTimes(1);
+      expect(props.excalidrawAPI.current.updateScene).toHaveBeenCalled();
       // Advance the version so the second fetch is not an early no-op.
       props.currentDrawingVersionRef.current = 4;
       getDrawingImpl = async () => ({

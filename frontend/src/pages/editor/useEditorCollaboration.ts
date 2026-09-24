@@ -932,7 +932,9 @@ export const useEditorCollaboration = ({
             mergedCount: mergedElements.length,
           });
         }
-        if (!silent) toast.success("已從 Server 同步最新內容");
+        // No success toast. The merged scene is already on the canvas, so
+        // announcing every peer sync was the same noise as the other two
+        // collaboration toasts we removed.
       } catch (err) {
         // BUG-15: distinguish the abort we caused from a real network error.
         const isAbort =
