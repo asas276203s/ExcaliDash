@@ -1,7 +1,10 @@
 import express from "express";
 import {
   buildShareLinkToken,
+  canEditDrawing,
+  getDrawingAccess,
   hashShareLinkToken,
+  isOwnerAccess,
   normalizeDrawingPermission,
 } from "../../authz/sharing";
 import type { DrawingRouteContext } from "./drawingRouteContext";
@@ -19,7 +22,31 @@ export const registerDrawingSharingRoutes = (
     logAuditEvent,
     resolveDefaultTtlMs,
     resolveMaxTtlMs,
+    getRequestPrincipal,
   } = context;
+
+  /**
+   * Who may manage sharing: the owner, and anyone with edit access.
+   *
+   * Editors can invite people and mint link shares, but never touch the
+   * owner's own access — see `guardOwnerTarget`. Failure is 404, not 403:
+   * confirming "this drawing exists, you just can't manage it" would let an
+   * outsider probe which ids are real.
+   */
+  const resolveShareManager = async (
+    req: express.Request,
+    drawingId: string,
+  ): Promise<{ ownerUserId: string; isOwner: boolean } | null> => {
+    const drawing = await prisma.drawing.findUnique({
+      where: { id: drawingId },
+      select: { userId: true },
+    });
+    if (!drawing) return null;
+    const principal = await getRequestPrincipal(req);
+    const access = await getDrawingAccess({ prisma, principal, drawingId });
+    if (!canEditDrawing(access)) return null;
+    return { ownerUserId: drawing.userId, isOwner: isOwnerAccess(access) };
+  };
   // Owner-only: resolve users by name/email in the context of a drawing you own (reduces enumeration risk).
   app.get(
     "/drawings/:id/share-resolve",
@@ -32,11 +59,8 @@ export const registerDrawingSharingRoutes = (
       const q = qRaw.toLowerCase();
       if (q.length < 3) return res.json({ users: [] });
 
-      const drawing = await prisma.drawing.findUnique({
-        where: { id },
-        select: { userId: true },
-      });
-      if (!drawing || drawing.userId !== req.user.id) {
+      const manager = await resolveShareManager(req, id);
+      if (!manager) {
         return res.status(404).json({ error: "Drawing not found" });
       }
 
@@ -65,11 +89,8 @@ export const registerDrawingSharingRoutes = (
       if (!req.user) return res.status(401).json({ error: "Unauthorized" });
       const { id } = req.params;
 
-      const drawing = await prisma.drawing.findUnique({
-        where: { id },
-        select: { userId: true },
-      });
-      if (!drawing || drawing.userId !== req.user.id) {
+      const manager = await resolveShareManager(req, id);
+      if (!manager) {
         return res.status(404).json({ error: "Drawing not found" });
       }
 
@@ -112,11 +133,8 @@ export const registerDrawingSharingRoutes = (
       if (!req.user) return res.status(401).json({ error: "Unauthorized" });
       const { id } = req.params;
 
-      const drawing = await prisma.drawing.findUnique({
-        where: { id },
-        select: { userId: true },
-      });
-      if (!drawing || drawing.userId !== req.user.id) {
+      const manager = await resolveShareManager(req, id);
+      if (!manager) {
         return res.status(404).json({ error: "Drawing not found" });
       }
 
@@ -129,6 +147,15 @@ export const registerDrawingSharingRoutes = (
         return res.status(400).json({
           error: "Validation error",
           message: "Invalid grantee or permission",
+        });
+      }
+      // Option A: sharing is open to editors, but the owner's own access is
+      // off limits — otherwise an editor could write a permission row for the
+      // owner and demote them.
+      if (granteeUserId === manager.ownerUserId) {
+        return res.status(403).json({
+          error: "Forbidden",
+          message: "Cannot change the owner's access",
         });
       }
       if (granteeUserId === req.user.id) {
@@ -191,12 +218,19 @@ export const registerDrawingSharingRoutes = (
       if (!req.user) return res.status(401).json({ error: "Unauthorized" });
       const { id, permId } = req.params;
 
-      const drawing = await prisma.drawing.findUnique({
-        where: { id },
-        select: { userId: true },
-      });
-      if (!drawing || drawing.userId !== req.user.id) {
+      const manager = await resolveShareManager(req, id);
+      if (!manager) {
         return res.status(404).json({ error: "Drawing not found" });
+      }
+
+      const target = await prisma.drawingPermission.findFirst({
+        where: { id: permId, drawingId: id },
+        select: { granteeUserId: true },
+      });
+      if (target && target.granteeUserId === manager.ownerUserId) {
+        return res
+          .status(403)
+          .json({ error: "Forbidden", message: "Cannot remove the owner's access" });
       }
 
       await prisma.drawingPermission.deleteMany({
@@ -226,11 +260,8 @@ export const registerDrawingSharingRoutes = (
       if (!req.user) return res.status(401).json({ error: "Unauthorized" });
       const { id } = req.params;
 
-      const drawing = await prisma.drawing.findUnique({
-        where: { id },
-        select: { userId: true },
-      });
-      if (!drawing || drawing.userId !== req.user.id) {
+      const manager = await resolveShareManager(req, id);
+      if (!manager) {
         return res.status(404).json({ error: "Drawing not found" });
       }
 
@@ -350,11 +381,8 @@ export const registerDrawingSharingRoutes = (
       if (!req.user) return res.status(401).json({ error: "Unauthorized" });
       const { id, shareId } = req.params;
 
-      const drawing = await prisma.drawing.findUnique({
-        where: { id },
-        select: { userId: true },
-      });
-      if (!drawing || drawing.userId !== req.user.id) {
+      const manager = await resolveShareManager(req, id);
+      if (!manager) {
         return res.status(404).json({ error: "Drawing not found" });
       }
 
